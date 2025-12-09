@@ -1,0 +1,21 @@
+# Facial Recognition System Requirements
+# Install with: pip install -r requirements.txt
+
+# Core facial recognition
+deepface>=0.0.90
+tensorflow>=2.10.0
+
+# Image processing
+opencv-python>=4.8.0
+numpy>=1.23.0
+
+# Data handling
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Web interface (optional - only needed for --interface mode)
+gradio>=4.0.0
+
+# Serialization
+# pickle is built-in, no install needed
+
