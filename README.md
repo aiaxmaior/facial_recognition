@@ -2,8 +2,7 @@
 Author: Arjun Joshi
 Date: 12.8.2025
 
-Summary:
-A comprehensive, multi-purpose facial recognition system powered by [DeepFace]
+A comprehensive, multi-purpose facial recognition system powered by [DeepFace](https://github.com/serengil/deepface). 
 Supports CLI usage, Python module import, and an optional Gradio web interface.
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
