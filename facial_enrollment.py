@@ -278,7 +278,7 @@ class GuidedEnrollmentCapture:
         self.cap = cv2.VideoCapture(self.camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_FPS, 60)
         
         if not self.cap.isOpened():
             return False
@@ -879,13 +879,13 @@ def get_camera_feed():
 
 
 def check_completion():
-    """Check if enrollment is complete."""
+    """Check if enrollment is complete. Returns (done_btn, completion_msg, msg_text)."""
     if capture_system.capture_complete and capture_system.enrollment_result:
         return (
-            gr.update(visible=True),
-            capture_system.enrollment_result
+            gr.update(visible=True),   # Show done button
+            gr.update(visible=True, value=capture_system.enrollment_result)  # Show message
         )
-    return gr.update(visible=False), ""
+    return gr.update(visible=False), gr.update(visible=False, value="")
 
 
 # ============================================================================
@@ -903,8 +903,18 @@ def create_blocks():
     if major_version >= 4:
         return gr.Blocks(
             title="Face Enrollment",
-            theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
-            css=".big-button { font-size: 1.5em !important; }"
+            theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate").set(
+                body_background_fill="*neutral_950",
+                body_background_fill_dark="*neutral_950",
+                block_background_fill="*neutral_900",
+                block_background_fill_dark="*neutral_900",
+            ),
+            css="""
+                .big-button { font-size: 1.5em !important; }
+                footer { display: none !important; }
+                .gradio-container footer { display: none !important; }
+                .dark { --body-background-fill: #0b0f19 !important; }
+            """
         )
     else:
         # Older versions - use minimal args
@@ -980,6 +990,7 @@ with create_blocks() as demo:
         
         with gr.Row():
             back_btn = gr.Button("← Back", size="sm", variant="secondary")
+            done_btn = gr.Button("✅ Complete", size="sm", variant="primary", visible=False)
             progress_display = gr.Markdown("0/5 photos", elem_classes=["status-box"])
         
         status_display = gr.Markdown(
@@ -1003,10 +1014,8 @@ with create_blocks() as demo:
             thumb_4 = gr.Image(label="4. Up", height=120, show_label=True, visible=True)
             thumb_5 = gr.Image(label="5. Down", height=120, show_label=True, visible=True)
         
-        # Completion panel (hidden until done)
-        with gr.Column(visible=False) as completion_panel:
-            completion_msg = gr.Markdown("")
-            done_btn = gr.Button("✅ Done - Return to Start", variant="primary", size="lg")
+        # Completion message (hidden until done)
+        completion_msg = gr.Markdown("", visible=False)
         
         # Timer to poll camera
         camera_timer = gr.Timer(value=0.05)  # 20 FPS polling
@@ -1051,13 +1060,53 @@ with create_blocks() as demo:
     # Completion check timer
     completion_timer.tick(
         fn=check_completion,
-        outputs=[completion_panel, completion_msg]
+        outputs=[done_btn, completion_msg]
     )
 
 
+def open_browser_fullscreen(url, delay=2.0):
+    """Open browser in fullscreen/kiosk mode after a delay."""
+    import subprocess
+    import shutil
+    
+    time.sleep(delay)  # Wait for server to start
+    
+    # Try different browsers with fullscreen flags
+    browsers = [
+        # Chrome/Chromium with kiosk mode (true fullscreen)
+        ("google-chrome", ["--kiosk", "--no-first-run", url]),
+        ("chromium-browser", ["--kiosk", "--no-first-run", url]),
+        ("chromium", ["--kiosk", "--no-first-run", url]),
+        # Chrome with start-fullscreen (F11 style, can exit with F11)
+        ("google-chrome", ["--start-fullscreen", "--no-first-run", url]),
+        ("chromium-browser", ["--start-fullscreen", "--no-first-run", url]),
+        # Firefox fullscreen
+        ("firefox", ["--kiosk", url]),
+    ]
+    
+    for browser, args in browsers:
+        if shutil.which(browser):
+            try:
+                subprocess.Popen([browser] + args)
+                logger.info(f"Launched {browser} in fullscreen mode")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to launch {browser}: {e}")
+    
+    # Fallback to default browser (not fullscreen)
+    import webbrowser
+    webbrowser.open(url)
+    logger.info("Opened default browser (fullscreen not available)")
+
+
 if __name__ == "__main__":
+    # Launch browser in fullscreen mode in background thread
+    url = "http://localhost:7861"
+    threading.Thread(target=open_browser_fullscreen, args=(url,), daemon=True).start()
+    
     demo.launch(
         server_name="0.0.0.0",
         server_port=7861,
-        share=False
+        share=False,
+        inbrowser=False  # We handle browser launch manually for fullscreen
     )
