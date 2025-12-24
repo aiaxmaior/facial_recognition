@@ -8,6 +8,7 @@ A multipurpose facial recognition system that can:
 - Run standalone via CLI
 - Be imported as a module into other scripts
 - Launch an optional Gradio web interface (--interface flag)
+- Process video streams via NVIDIA DeepStream (Jetson optimized)
 
 Features:
 - Face enrollment with embedding vectorization
@@ -17,6 +18,12 @@ Features:
 - Manual image verification
 - Direct DeepFace.verify() comparison
 - Facial attribute analysis (age, gender, race, emotion)
+- DeepStream integration for hardware-accelerated video processing
+  - RTSP stream support (IP cameras, NVRs)
+  - USB camera support (V4L2)
+  - CSI camera support (Jetson native)
+  - Video file processing
+  - Multi-source/multi-camera support
 
 Usage:
     # CLI enrollment
@@ -28,15 +35,37 @@ Usage:
     # Launch Gradio interface
     python facial_recognition.py --interface
     
+    # DeepStream - RTSP stream
+    python facial_recognition.py deepstream -s "rtsp://192.168.1.100:554/stream"
+    
+    # DeepStream - USB camera
+    python facial_recognition.py deepstream -s /dev/video0
+    
+    # DeepStream - CSI camera (Jetson)
+    python facial_recognition.py deepstream -s csi
+    
+    # DeepStream - Video file
+    python facial_recognition.py deepstream -s video.mp4
+    
+    # DeepStream - Multiple sources
+    python facial_recognition.py deepstream-multi -s "rtsp://cam1/stream" "rtsp://cam2/stream"
+    
     # Import as module
-    from facial_recognition import FaceAuthSystem
+    from facial_recognition import FaceAuthSystem, DeepStreamProcessor
     system = FaceAuthSystem()
-    system.enroll("name", ["img1.jpg", "img2.jpg"])
+    processor = DeepStreamProcessor(system)
+    processor.start("rtsp://camera/stream")
 """
+
+import os
+
+# Configure TensorFlow memory growth BEFORE importing TF/DeepFace
+# This prevents TensorFlow from grabbing all GPU memory at once
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
 
 import cv2
 import numpy as np
-import os
 import time
 import threading
 import queue
@@ -60,6 +89,31 @@ try:
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
+
+# DeepStream imports (Jetson/NVIDIA only)
+try:
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst, GLib
+    import pyds
+    DEEPSTREAM_AVAILABLE = True
+    
+    # GstRtspServer is optional (only needed for RTSP output server, not input)
+    try:
+        gi.require_version('GstRtspServer', '1.0')
+        from gi.repository import GstRtspServer
+        RTSP_SERVER_AVAILABLE = True
+    except (ValueError, ImportError):
+        GstRtspServer = None
+        RTSP_SERVER_AVAILABLE = False
+        
+except (ImportError, ValueError):
+    DEEPSTREAM_AVAILABLE = False
+    RTSP_SERVER_AVAILABLE = False
+    Gst = None
+    GLib = None
+    GstRtspServer = None
+    pyds = None
 
 # Configure logging
 logging.basicConfig(
@@ -625,6 +679,805 @@ class CameraManager:
 
 
 # =============================================================================
+# DEEPSTREAM PROCESSOR
+# =============================================================================
+
+class DeepStreamProcessor:
+    """
+    DeepStream-based video processor for efficient hardware-accelerated
+    video decoding and frame extraction on NVIDIA Jetson devices.
+    
+    Supports:
+    - RTSP streams (IP cameras, NVRs)
+    - USB cameras (V4L2)
+    - Video files (MP4, AVI, etc.)
+    - CSI cameras (Jetson native)
+    
+    Usage:
+        processor = DeepStreamProcessor(face_system)
+        processor.start("rtsp://192.168.1.100:554/stream")
+        # or
+        processor.start("/dev/video0")  # USB camera
+        # or  
+        processor.start("video.mp4")  # File
+    """
+    
+    # Source type detection
+    SOURCE_TYPE_RTSP = "rtsp"
+    SOURCE_TYPE_USB = "usb"
+    SOURCE_TYPE_FILE = "file"
+    SOURCE_TYPE_CSI = "csi"
+    SOURCE_TYPE_BAYER = "bayer"  # For Bayer/RAW cameras like RG10
+    
+    def __init__(
+        self,
+        face_system: 'FaceAuthSystem',
+        recognition_interval: float = 1.0,
+        display_output: bool = True,
+        output_width: int = 1280,
+        output_height: int = 720
+    ):
+        """
+        Initialize DeepStream processor.
+        
+        Args:
+            face_system: FaceAuthSystem instance for face matching
+            recognition_interval: Seconds between face recognition attempts
+            display_output: Whether to display video output window
+            output_width: Output display width
+            output_height: Output display height
+        """
+        if not DEEPSTREAM_AVAILABLE:
+            raise RuntimeError(
+                "DeepStream not available. Ensure you have:\n"
+                "  1. NVIDIA DeepStream SDK installed\n"
+                "  2. PyDS bindings installed\n"
+                "  3. GStreamer with GI bindings\n"
+                "Install on Jetson: sudo apt install deepstream-6.* python3-gi python3-gst-1.0"
+            )
+        
+        self.face_system = face_system
+        self.recognition_interval = recognition_interval
+        self.display_output = display_output
+        self.output_width = output_width
+        self.output_height = output_height
+        
+        # Pipeline state
+        self.pipeline = None
+        self.loop = None
+        self.running = False
+        self.last_recognition_time = 0
+        
+        # Results callback
+        self._on_recognition_callback = None
+        
+        # Frame buffer for recognition
+        self._current_frame = None
+        self._frame_lock = threading.Lock()
+        
+        # Initialize GStreamer
+        Gst.init(None)
+        logger.info("DeepStreamProcessor initialized")
+    
+    def set_recognition_callback(self, callback):
+        """
+        Set callback function for recognition results.
+        
+        Callback signature: callback(name: str, distance: float, is_match: bool, frame: np.ndarray)
+        """
+        self._on_recognition_callback = callback
+    
+    def _detect_source_type(self, source: str) -> str:
+        """Detect the type of video source."""
+        if source.startswith("rtsp://") or source.startswith("rtspt://"):
+            return self.SOURCE_TYPE_RTSP
+        elif source.startswith("bayer://") or source == "bayer":
+            # Explicit Bayer camera mode: bayer:///dev/video2 or just "bayer"
+            return self.SOURCE_TYPE_BAYER
+        elif source.startswith("/dev/video"):
+            return self.SOURCE_TYPE_USB
+        elif source == "csi" or source.startswith("csi://"):
+            return self.SOURCE_TYPE_CSI
+        elif os.path.isfile(source):
+            return self.SOURCE_TYPE_FILE
+        else:
+            # Try as USB camera index
+            try:
+                int(source)
+                return self.SOURCE_TYPE_USB
+            except ValueError:
+                return self.SOURCE_TYPE_FILE
+    
+    def _create_pipeline(self, source: str):
+        """Create GStreamer pipeline based on source type."""
+        source_type = self._detect_source_type(source)
+        logger.info(f"Creating pipeline for source type: {source_type}")
+        
+        pipeline = Gst.Pipeline.new("facial-recognition-pipeline")
+        
+        if source_type == self.SOURCE_TYPE_RTSP:
+            pipeline = self._create_rtsp_pipeline(source)
+        elif source_type == self.SOURCE_TYPE_USB:
+            pipeline = self._create_usb_pipeline(source)
+        elif source_type == self.SOURCE_TYPE_CSI:
+            pipeline = self._create_csi_pipeline()
+        elif source_type == self.SOURCE_TYPE_BAYER:
+            pipeline = self._create_bayer_pipeline(source)
+        elif source_type == self.SOURCE_TYPE_FILE:
+            pipeline = self._create_file_pipeline(source)
+        
+        return pipeline
+    
+    def _create_rtsp_pipeline(self, rtsp_uri: str):
+        """Create pipeline for RTSP stream."""
+        pipeline_str = f"""
+            rtspsrc location={rtsp_uri} latency=100 ! 
+            rtph264depay ! h264parse ! 
+            nvv4l2decoder ! 
+            nvvideoconvert ! 
+            video/x-raw(memory:NVMM),format=RGBA ! 
+            nvvideoconvert ! 
+            video/x-raw,format=BGRx ! 
+            videoconvert ! 
+            video/x-raw,format=BGR ! 
+            appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+        """
+        
+        if self.display_output:
+            pipeline_str = f"""
+                rtspsrc location={rtsp_uri} latency=100 ! 
+                rtph264depay ! h264parse ! 
+                nvv4l2decoder ! 
+                nvvideoconvert ! 
+                video/x-raw(memory:NVMM),format=RGBA ! 
+                tee name=t
+                t. ! queue ! nvvideoconvert ! 
+                    video/x-raw,format=BGRx ! videoconvert ! 
+                    video/x-raw,format=BGR ! 
+                    appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                t. ! queue ! nv3dsink sync=false
+            """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _create_usb_pipeline(self, device: str):
+        """Create pipeline for USB camera (including Bayer/RAW formats)."""
+        # Handle both /dev/videoX and integer index
+        if device.startswith("/dev/video"):
+            device_path = device
+        else:
+            try:
+                idx = int(device)
+                device_path = f"/dev/video{idx}"
+            except ValueError:
+                device_path = "/dev/video0"
+        
+        # Simple pipeline using CPU conversion (more compatible, avoids argus issues)
+        # Works with most USB cameras and V4L2 devices
+        pipeline_str = f"""
+            v4l2src device={device_path} do-timestamp=true ! 
+            video/x-raw ! 
+            videoconvert ! 
+            videoscale ! 
+            video/x-raw,format=BGR,width=640,height=480 ! 
+            appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+        """
+        
+        if self.display_output:
+            pipeline_str = f"""
+                v4l2src device={device_path} do-timestamp=true ! 
+                video/x-raw ! 
+                videoconvert ! 
+                videoscale ! 
+                video/x-raw,width=640,height=480 ! 
+                tee name=t
+                t. ! queue ! videoconvert ! video/x-raw,format=BGR ! 
+                    appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                t. ! queue ! videoconvert ! autovideosink sync=false
+            """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _create_bayer_pipeline(self, source: str):
+        """Create pipeline for Bayer/RAW cameras (RG10, RG12, etc.) using software debayer."""
+        # Extract device path from bayer:///dev/videoX format
+        if source.startswith("bayer://"):
+            device_path = source[8:]  # Remove "bayer://"
+        elif source == "bayer":
+            device_path = "/dev/video2"  # Default
+        else:
+            device_path = "/dev/video2"
+        
+        # Use bayer2rgb for software debayering (works without argus daemon)
+        # bayer2rgb converts Bayer pattern to RGB
+        pipeline_str = f"""
+            v4l2src device={device_path} do-timestamp=true ! 
+            video/x-raw,format=RG10 ! 
+            bayer2rgb ! 
+            videoconvert ! 
+            videoscale ! 
+            video/x-raw,format=BGR,width=640,height=480 ! 
+            appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+        """
+        
+        if self.display_output:
+            pipeline_str = f"""
+                v4l2src device={device_path} do-timestamp=true ! 
+                video/x-raw,format=RG10 ! 
+                bayer2rgb ! 
+                videoconvert ! 
+                videoscale ! 
+                video/x-raw,width=640,height=480 ! 
+                tee name=t
+                t. ! queue ! videoconvert ! video/x-raw,format=BGR ! 
+                    appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                t. ! queue ! videoconvert ! autovideosink sync=false
+            """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _create_csi_pipeline(self):
+        """Create pipeline for CSI camera (Jetson native camera)."""
+        pipeline_str = f"""
+            nvarguscamerasrc ! 
+            video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 ! 
+            nvvideoconvert ! 
+            video/x-raw,format=BGRx ! 
+            videoconvert ! 
+            video/x-raw,format=BGR ! 
+            appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+        """
+        
+        if self.display_output:
+            pipeline_str = f"""
+                nvarguscamerasrc ! 
+                video/x-raw(memory:NVMM),width=1280,height=720,framerate=30/1,format=NV12 ! 
+                tee name=t
+                t. ! queue ! nvvideoconvert ! video/x-raw,format=BGRx ! 
+                    videoconvert ! video/x-raw,format=BGR ! 
+                    appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                t. ! queue ! nv3dsink sync=false
+            """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _create_file_pipeline(self, file_path: str):
+        """Create pipeline for video file."""
+        # Detect file extension for appropriate demuxer
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        if ext in ['.mp4', '.mov', '.m4v']:
+            demux = "qtdemux"
+        elif ext in ['.avi']:
+            demux = "avidemux"
+        elif ext in ['.mkv', '.webm']:
+            demux = "matroskademux"
+        else:
+            demux = "decodebin"
+        
+        if demux == "decodebin":
+            pipeline_str = f"""
+                filesrc location={file_path} ! 
+                decodebin ! 
+                videoconvert ! 
+                video/x-raw,format=BGR ! 
+                appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+            """
+        else:
+            pipeline_str = f"""
+                filesrc location={file_path} ! 
+                {demux} ! h264parse ! 
+                nvv4l2decoder ! 
+                nvvideoconvert ! 
+                video/x-raw,format=BGRx ! 
+                videoconvert ! 
+                video/x-raw,format=BGR ! 
+                appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+            """
+        
+        if self.display_output:
+            if demux == "decodebin":
+                pipeline_str = f"""
+                    filesrc location={file_path} ! 
+                    decodebin ! 
+                    tee name=t
+                    t. ! queue ! videoconvert ! video/x-raw,format=BGR ! 
+                        appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                    t. ! queue ! videoconvert ! xvimagesink sync=false
+                """
+            else:
+                pipeline_str = f"""
+                    filesrc location={file_path} ! 
+                    {demux} ! h264parse ! 
+                    nvv4l2decoder ! 
+                    nvvideoconvert ! 
+                    video/x-raw(memory:NVMM),format=RGBA ! 
+                    tee name=t
+                    t. ! queue ! nvvideoconvert ! video/x-raw,format=BGRx ! 
+                        videoconvert ! video/x-raw,format=BGR ! 
+                        appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                    t. ! queue ! nv3dsink sync=false
+                """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _on_new_sample(self, sink):
+        """Callback when new frame is available from appsink."""
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.ERROR
+        
+        buf = sample.get_buffer()
+        caps = sample.get_caps()
+        
+        # Extract frame dimensions
+        struct = caps.get_structure(0)
+        width = struct.get_value("width")
+        height = struct.get_value("height")
+        
+        # Map buffer to numpy array
+        success, map_info = buf.map(Gst.MapFlags.READ)
+        if not success:
+            return Gst.FlowReturn.ERROR
+        
+        try:
+            # Convert to numpy array (BGR format)
+            frame = np.ndarray(
+                shape=(height, width, 3),
+                dtype=np.uint8,
+                buffer=map_info.data
+            ).copy()
+            
+            with self._frame_lock:
+                self._current_frame = frame
+            
+            # Check if it's time for recognition
+            current_time = time.time()
+            if current_time - self.last_recognition_time >= self.recognition_interval:
+                self.last_recognition_time = current_time
+                self._perform_recognition(frame)
+                
+        finally:
+            buf.unmap(map_info)
+        
+        return Gst.FlowReturn.OK
+    
+    def _perform_recognition(self, frame: np.ndarray):
+        """Perform face recognition on the frame."""
+        try:
+            name, distance, is_match = self.face_system.match_from_frame(frame)
+            
+            if name != "No Face":
+                if is_match:
+                    logger.info(f"✅ MATCH: {name} (distance: {distance:.4f})")
+                else:
+                    logger.info(f"⛔ Unknown (best guess: {name}, distance: {distance:.4f})")
+            
+            # Call callback if set
+            if self._on_recognition_callback:
+                self._on_recognition_callback(name, distance, is_match, frame)
+                
+        except Exception as e:
+            logger.debug(f"Recognition error: {e}")
+    
+    def _on_bus_message(self, bus, message):
+        """Handle GStreamer bus messages."""
+        msg_type = message.type
+        
+        if msg_type == Gst.MessageType.EOS:
+            logger.info("End of stream reached")
+            self.stop()
+        elif msg_type == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            logger.error(f"GStreamer error: {err.message}")
+            logger.debug(f"Debug info: {debug}")
+            self.stop()
+        elif msg_type == Gst.MessageType.WARNING:
+            warn, debug = message.parse_warning()
+            logger.warning(f"GStreamer warning: {warn.message}")
+        elif msg_type == Gst.MessageType.STATE_CHANGED:
+            if message.src == self.pipeline:
+                old, new, pending = message.parse_state_changed()
+                logger.debug(f"Pipeline state: {old.value_nick} -> {new.value_nick}")
+        
+        return True
+    
+    def start(self, source: str, blocking: bool = True):
+        """
+        Start processing video from the given source.
+        
+        Args:
+            source: Video source (RTSP URL, device path, file path, or 'csi')
+            blocking: If True, blocks until stopped. If False, runs in background.
+        """
+        if self.running:
+            logger.warning("Pipeline already running")
+            return
+        
+        logger.info(f"Starting DeepStream pipeline with source: {source}")
+        
+        try:
+            self.pipeline = self._create_pipeline(source)
+        except GLib.Error as e:
+            logger.error(f"Failed to create pipeline: {e}")
+            raise RuntimeError(f"Pipeline creation failed: {e}")
+        
+        # Get appsink and connect signal
+        sink = self.pipeline.get_by_name("sink")
+        if sink:
+            sink.connect("new-sample", self._on_new_sample)
+        else:
+            logger.warning("Could not find appsink element")
+        
+        # Set up bus watch
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_bus_message)
+        
+        # Start pipeline
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            logger.error("Failed to start pipeline")
+            raise RuntimeError("Failed to start GStreamer pipeline")
+        
+        self.running = True
+        logger.info("Pipeline started successfully")
+        
+        if blocking:
+            self._run_main_loop()
+        else:
+            self.loop = GLib.MainLoop()
+            thread = threading.Thread(target=self._run_main_loop, daemon=True)
+            thread.start()
+    
+    def _run_main_loop(self):
+        """Run the GLib main loop."""
+        self.loop = GLib.MainLoop()
+        try:
+            self.loop.run()
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Stop the pipeline."""
+        if not self.running:
+            return
+        
+        logger.info("Stopping pipeline...")
+        self.running = False
+        
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.pipeline = None
+        
+        if self.loop and self.loop.is_running():
+            self.loop.quit()
+        
+        logger.info("Pipeline stopped")
+    
+    def get_current_frame(self) -> Optional[np.ndarray]:
+        """Get the most recent frame."""
+        with self._frame_lock:
+            return self._current_frame.copy() if self._current_frame is not None else None
+
+
+class DeepStreamMultiSource:
+    """
+    Multi-source DeepStream processor for handling multiple video streams.
+    
+    Useful for multi-camera setups like security systems.
+    
+    Usage:
+        multi = DeepStreamMultiSource(face_system)
+        multi.add_source("rtsp://cam1/stream", "Camera 1")
+        multi.add_source("rtsp://cam2/stream", "Camera 2")
+        multi.start()
+    """
+    
+    def __init__(
+        self,
+        face_system: 'FaceAuthSystem',
+        recognition_interval: float = 1.0
+    ):
+        if not DEEPSTREAM_AVAILABLE:
+            raise RuntimeError("DeepStream not available")
+        
+        self.face_system = face_system
+        self.recognition_interval = recognition_interval
+        self.sources = {}
+        self.pipeline = None
+        self.loop = None
+        self.running = False
+        self._frame_buffers = {}
+        self._frame_lock = threading.Lock()
+        self.last_recognition_time = {}
+        
+        Gst.init(None)
+        logger.info("DeepStreamMultiSource initialized")
+    
+    def add_source(self, uri: str, name: str = None):
+        """Add a video source."""
+        if name is None:
+            name = f"source_{len(self.sources)}"
+        self.sources[name] = uri
+        self._frame_buffers[name] = None
+        self.last_recognition_time[name] = 0
+        logger.info(f"Added source '{name}': {uri}")
+    
+    def _create_multi_source_pipeline(self):
+        """Create a multi-source DeepStream pipeline using nvstreammux."""
+        pipeline = Gst.Pipeline.new("multi-source-pipeline")
+        
+        # Create streammux
+        streammux = Gst.ElementFactory.make("nvstreammux", "streammux")
+        streammux.set_property("batch-size", len(self.sources))
+        streammux.set_property("width", 1280)
+        streammux.set_property("height", 720)
+        streammux.set_property("batched-push-timeout", 40000)
+        streammux.set_property("live-source", 1)
+        pipeline.add(streammux)
+        
+        # Add sources
+        for idx, (name, uri) in enumerate(self.sources.items()):
+            if uri.startswith("rtsp://"):
+                # RTSP source
+                source = Gst.ElementFactory.make("rtspsrc", f"source-{idx}")
+                source.set_property("location", uri)
+                source.set_property("latency", 100)
+                
+                depay = Gst.ElementFactory.make("rtph264depay", f"depay-{idx}")
+                parser = Gst.ElementFactory.make("h264parse", f"parser-{idx}")
+                decoder = Gst.ElementFactory.make("nvv4l2decoder", f"decoder-{idx}")
+                
+                pipeline.add(source)
+                pipeline.add(depay)
+                pipeline.add(parser)
+                pipeline.add(decoder)
+                
+                # Link source to depay (dynamic pad)
+                def on_pad_added(src, pad, depay=depay):
+                    sink_pad = depay.get_static_pad("sink")
+                    if not sink_pad.is_linked():
+                        pad.link(sink_pad)
+                
+                source.connect("pad-added", on_pad_added)
+                depay.link(parser)
+                parser.link(decoder)
+                
+                # Link decoder to streammux
+                srcpad = decoder.get_static_pad("src")
+                sinkpad = streammux.get_request_pad(f"sink_{idx}")
+                srcpad.link(sinkpad)
+                
+            elif uri.startswith("/dev/video"):
+                # USB camera
+                source = Gst.ElementFactory.make("v4l2src", f"source-{idx}")
+                source.set_property("device", uri)
+                
+                caps = Gst.ElementFactory.make("capsfilter", f"caps-{idx}")
+                caps.set_property("caps", Gst.Caps.from_string(
+                    "video/x-raw,width=640,height=480,framerate=30/1"
+                ))
+                
+                vidconv = Gst.ElementFactory.make("videoconvert", f"vidconv-{idx}")
+                nvvidconv = Gst.ElementFactory.make("nvvideoconvert", f"nvvidconv-{idx}")
+                
+                pipeline.add(source)
+                pipeline.add(caps)
+                pipeline.add(vidconv)
+                pipeline.add(nvvidconv)
+                
+                source.link(caps)
+                caps.link(vidconv)
+                vidconv.link(nvvidconv)
+                
+                srcpad = nvvidconv.get_static_pad("src")
+                sinkpad = streammux.get_request_pad(f"sink_{idx}")
+                srcpad.link(sinkpad)
+        
+        # Add converter and tiler for multi-stream display
+        nvvidconv = Gst.ElementFactory.make("nvvideoconvert", "nvvidconv")
+        tiler = Gst.ElementFactory.make("nvmultistreamtiler", "tiler")
+        
+        # Calculate tiler dimensions
+        num_sources = len(self.sources)
+        cols = int(np.ceil(np.sqrt(num_sources)))
+        rows = int(np.ceil(num_sources / cols))
+        tiler.set_property("rows", rows)
+        tiler.set_property("columns", cols)
+        tiler.set_property("width", 1280)
+        tiler.set_property("height", 720)
+        
+        pipeline.add(nvvidconv)
+        pipeline.add(tiler)
+        
+        streammux.link(nvvidconv)
+        nvvidconv.link(tiler)
+        
+        # Add display sink
+        sink = Gst.ElementFactory.make("nv3dsink", "sink")
+        sink.set_property("sync", False)
+        pipeline.add(sink)
+        tiler.link(sink)
+        
+        return pipeline
+    
+    def start(self, blocking: bool = True):
+        """Start processing all sources."""
+        if not self.sources:
+            logger.error("No sources added")
+            return
+        
+        if self.running:
+            logger.warning("Already running")
+            return
+        
+        logger.info(f"Starting multi-source pipeline with {len(self.sources)} sources")
+        
+        self.pipeline = self._create_multi_source_pipeline()
+        
+        # Set up bus
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_bus_message)
+        
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("Failed to start multi-source pipeline")
+        
+        self.running = True
+        
+        if blocking:
+            self._run_main_loop()
+        else:
+            thread = threading.Thread(target=self._run_main_loop, daemon=True)
+            thread.start()
+    
+    def _on_bus_message(self, bus, message):
+        """Handle bus messages."""
+        if message.type == Gst.MessageType.EOS:
+            logger.info("End of stream")
+            self.stop()
+        elif message.type == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            logger.error(f"Error: {err.message}")
+            self.stop()
+        return True
+    
+    def _run_main_loop(self):
+        """Run main loop."""
+        self.loop = GLib.MainLoop()
+        try:
+            self.loop.run()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Stop all processing."""
+        if not self.running:
+            return
+        
+        self.running = False
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+        if self.loop and self.loop.is_running():
+            self.loop.quit()
+        logger.info("Multi-source pipeline stopped")
+
+
+# =============================================================================
+# LIVE STREAM RECOGNIZER (Uses pkl database - FAST)
+# =============================================================================
+
+class LiveStreamRecognizer:
+    """
+    Continuous live stream face recognition using pkl embedding database.
+    Much faster than DeepFace.stream() because it uses pre-computed embeddings.
+    """
+    
+    def __init__(self, face_system: FaceAuthSystem, camera_index: int = 0):
+        self.face_system = face_system
+        self.camera_index = camera_index
+        self.cap = None
+        self.running = False
+        self.current_frame = None
+        self.current_result = {"name": "Initializing...", "distance": 0, "is_match": False}
+        self.frame_lock = threading.Lock()
+        self.last_recognition_time = 0
+        self.recognition_interval = 0.5  # Recognize every 0.5 seconds
+        
+    def start(self):
+        """Start the live stream."""
+        if self.running:
+            return "Already running"
+        
+        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 24)
+        
+        if not self.cap.isOpened():
+            return "❌ Failed to open camera"
+        
+        self.running = True
+        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.capture_thread.start()
+        return "✅ Live stream started"
+    
+    def stop(self):
+        """Stop the live stream."""
+        self.running = False
+        if self.cap:
+            self.cap.release()
+        return "Stream stopped"
+    
+    def _capture_loop(self):
+        """Main capture and recognition loop."""
+        while self.running and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            
+            frame = cv2.flip(frame, 1)  # Mirror
+            display_frame = frame.copy()
+            
+            # Run recognition periodically (not every frame to save CPU)
+            current_time = time.time()
+            if current_time - self.last_recognition_time >= self.recognition_interval:
+                self.last_recognition_time = current_time
+                
+                try:
+                    name, distance, is_match = self.face_system.match_from_frame(frame)
+                    self.current_result = {"name": name, "distance": distance, "is_match": is_match}
+                except Exception as e:
+                    self.current_result = {"name": "Error", "distance": 0, "is_match": False}
+            
+            # Draw result on frame
+            result = self.current_result
+            if result["name"] != "No Face" and result["name"] != "Error":
+                if result["is_match"]:
+                    # Green box and text for match
+                    color = (0, 255, 0)
+                    text = f"MATCH: {result['name']} ({result['distance']:.3f})"
+                else:
+                    # Orange for no match
+                    color = (0, 165, 255)
+                    text = f"Unknown ({result['name']}: {result['distance']:.3f})"
+                
+                cv2.rectangle(display_frame, (10, 10), (630, 70), color, 2)
+                cv2.putText(display_frame, text, (20, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            else:
+                # Gray for no face
+                cv2.putText(display_frame, "No face detected", (20, 50),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, (150, 150, 150), 2)
+            
+            # Convert to RGB for Gradio
+            with self.frame_lock:
+                self.current_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            
+            time.sleep(0.033)  # ~30 FPS display
+    
+    def get_frame(self):
+        """Get current frame for Gradio display."""
+        with self.frame_lock:
+            if self.current_frame is not None:
+                result = self.current_result
+                status = f"{result['name']} | Distance: {result['distance']:.4f} | Match: {result['is_match']}"
+                return self.current_frame, status
+        return None, "Waiting for camera..."
+
+
+# =============================================================================
 # GRADIO INTERFACE
 # =============================================================================
 
@@ -892,23 +1745,42 @@ class GradioInterface:
                 
                 cam_btn.click(fn=self._camera_stream_verify, outputs=[cam_output_img, cam_output_log])
             
-            # Tab 1b: DeepFace Stream
-            with gr.Tab("🎬 DeepFace Stream"):
+            # Tab 1b: Live Stream Recognition (Fast - uses pkl database)
+            with gr.Tab("🎬 Live Stream"):
                 gr.Markdown("""
-                ### Real-time Stream Analysis
-                Uses `DeepFace.stream()` for continuous real-time face recognition.
+                ### ⚡ Continuous Live Recognition
+                Real-time face recognition using pre-computed embeddings (pkl database).
                 
-                ⚠️ **Note:** This opens a separate OpenCV window and runs in blocking mode.
+                **Much faster** than DeepFace.stream() - uses vectorized matching!
                 """)
-                stream_db_path = gr.Textbox(
-                    label="Database Path",
-                    placeholder="Path to folder containing person subfolders with images",
-                    value=self.system.db_folder
-                )
-                stream_btn = gr.Button("▶️ Start DeepFace Stream", variant="primary")
-                stream_output = gr.Textbox(label="Status", lines=3, interactive=False)
                 
-                stream_btn.click(fn=self._start_deepface_stream, inputs=[stream_db_path], outputs=[stream_output])
+                # Initialize live stream recognizer
+                live_stream = LiveStreamRecognizer(self.system, camera_index=0)
+                
+                with gr.Row():
+                    live_start_btn = gr.Button("▶️ Start Live Stream", variant="primary", size="lg")
+                    live_stop_btn = gr.Button("⏹️ Stop", variant="stop", size="lg")
+                
+                live_status = gr.Textbox(label="Status", value="Click Start to begin", interactive=False)
+                live_video = gr.Image(label="Live Feed", height=480)
+                live_result = gr.Textbox(label="Recognition Result", interactive=False)
+                
+                def start_live():
+                    return live_stream.start()
+                
+                def stop_live():
+                    return live_stream.stop()
+                
+                def get_live_frame():
+                    frame, status = live_stream.get_frame()
+                    return frame, status
+                
+                live_start_btn.click(fn=start_live, outputs=[live_status])
+                live_stop_btn.click(fn=stop_live, outputs=[live_status])
+                
+                # Timer to poll frames
+                live_timer = gr.Timer(value=0.1)  # 10 FPS polling
+                live_timer.tick(fn=get_live_frame, outputs=[live_video, live_result])
             
             # Tab 2: Manual Verification
             with gr.Tab("📤 Manual Verification"):
@@ -1131,6 +2003,45 @@ Examples:
     parser_delete = subparsers.add_parser("delete", help="Delete enrolled face")
     parser_delete.add_argument("-n", "--name", required=True, help="Name to delete")
     
+    # DeepStream stream subcommand
+    parser_ds = subparsers.add_parser("deepstream", help="Start DeepStream video processing")
+    parser_ds.add_argument(
+        "-s", "--source", 
+        required=True,
+        help="Video source: RTSP URL (rtsp://...), USB camera (/dev/video0 or index), CSI camera ('csi'), or file path"
+    )
+    parser_ds.add_argument(
+        "--interval", "-i",
+        type=float,
+        default=1.0,
+        help="Recognition interval in seconds (default: 1.0)"
+    )
+    parser_ds.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Disable video display output"
+    )
+    
+    # DeepStream multi-source subcommand
+    parser_ds_multi = subparsers.add_parser("deepstream-multi", help="Start multi-source DeepStream processing")
+    parser_ds_multi.add_argument(
+        "-s", "--sources",
+        nargs="+",
+        required=True,
+        help="Video sources (RTSP URLs or device paths)"
+    )
+    parser_ds_multi.add_argument(
+        "--names",
+        nargs="+",
+        help="Names for each source (optional)"
+    )
+    parser_ds_multi.add_argument(
+        "--interval", "-i",
+        type=float,
+        default=1.0,
+        help="Recognition interval in seconds (default: 1.0)"
+    )
+    
     args = parser.parse_args()
     
     # Initialize system
@@ -1209,6 +2120,67 @@ Examples:
             print(f"✅ Deleted {args.name}")
         else:
             print(f"❌ {args.name} not found")
+    
+    elif args.command == "deepstream":
+        if not DEEPSTREAM_AVAILABLE:
+            print("❌ DeepStream not available. Ensure you have:")
+            print("   1. NVIDIA DeepStream SDK installed")
+            print("   2. PyDS bindings installed")
+            print("   3. GStreamer with GI bindings")
+            print("   Install on Jetson: sudo apt install deepstream-6.* python3-gi python3-gst-1.0")
+            return
+        
+        print(f"🎬 Starting DeepStream processing...")
+        print(f"   Source: {args.source}")
+        print(f"   Recognition interval: {args.interval}s")
+        print(f"   Display: {'Disabled' if args.no_display else 'Enabled'}")
+        print(f"   Press Ctrl+C to stop\n")
+        
+        def on_recognition(name, distance, is_match, frame):
+            if name != "No Face":
+                if is_match:
+                    print(f"✅ MATCH: {name} (distance: {distance:.4f})")
+                else:
+                    print(f"⛔ Unknown (closest: {name}, distance: {distance:.4f})")
+        
+        try:
+            processor = DeepStreamProcessor(
+                face_system=system,
+                recognition_interval=args.interval,
+                display_output=not args.no_display
+            )
+            processor.set_recognition_callback(on_recognition)
+            processor.start(args.source, blocking=True)
+        except KeyboardInterrupt:
+            print("\n🛑 Stopped by user")
+        except Exception as e:
+            print(f"❌ Error: {e}")
+    
+    elif args.command == "deepstream-multi":
+        if not DEEPSTREAM_AVAILABLE:
+            print("❌ DeepStream not available")
+            return
+        
+        print(f"🎬 Starting multi-source DeepStream processing...")
+        print(f"   Sources: {len(args.sources)}")
+        
+        try:
+            processor = DeepStreamMultiSource(
+                face_system=system,
+                recognition_interval=args.interval
+            )
+            
+            names = args.names if args.names else [None] * len(args.sources)
+            for source, name in zip(args.sources, names):
+                processor.add_source(source, name)
+                print(f"   • {name or 'auto'}: {source}")
+            
+            print(f"   Press Ctrl+C to stop\n")
+            processor.start(blocking=True)
+        except KeyboardInterrupt:
+            print("\n🛑 Stopped by user")
+        except Exception as e:
+            print(f"❌ Error: {e}")
             
     else:
         parser.print_help()
