@@ -9,15 +9,18 @@ tensorflow>=2.10.0
 opencv-python>=4.8.0
 numpy>=1.23.0
 
+# Face mesh / pose detection (for guided enrollment)
+mediapipe>=0.10.0
+
 # Data handling
 pandas>=2.0.0
 scipy>=1.10.0
 
-# Web interface (optional - only needed for --interface mode)
+# Web interface
 gradio>=4.0.0
 
 # Serialization
-# pickle is built-in, no install needed
+# pickle, threading, time, os are built-in - no install needed
 
 # =============================================================================
 # DeepStream Dependencies (Jetson/NVIDIA Only)
