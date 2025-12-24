@@ -1,21 +1,69 @@
 """
 Facial Enrollment System - Simple Elder-Friendly Interface
 Uses MediaPipe FaceMesh for automatic head pose detection and guided capture.
+Audio notifications guide users through the 5-picture enrollment process.
 """
-
+import logging
+import base64
 import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import os
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Disable Gradio analytics/telemetry before importing
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
 import gradio as gr
 import threading
-import os
 import pickle
 from deepface import DeepFace
 
+
+def get_image_base64(image_path):
+    """Convert an image file to a base64 data URI for embedding in markdown."""
+    if not os.path.exists(image_path):
+        return ""
+    
+    # Determine MIME type from extension
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_types = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+    }
+    mime_type = mime_types.get(ext, 'image/png')
+    
+    with open(image_path, 'rb') as f:
+        data = base64.b64encode(f.read()).decode('utf-8')
+    
+    return f"data:{mime_type};base64,{data}"
+
+# Audio support
+try:
+    import pygame
+    pygame.mixer.init()
+    AUDIO_AVAILABLE = True
+except ImportError:
+    AUDIO_AVAILABLE = False
+    print("⚠️ pygame not installed - audio notifications disabled. Install with: pip install pygame")
+
 # Configuration
 CHOSEN_MODEL = "Facenet512"
+# Detector options: retinaface (most accurate), mtcnn (good balance), opencv (fastest, lenient)
+# Using 'mtcnn' for better handling of angled faces during enrollment
+CHOSEN_DETECTOR = "mtcnn"
 OUTPUT_DIR = "enrolled_faces"
+AUDIO_DIR = "audio"
 COUNTDOWN_SECONDS = 3
 POSE_HOLD_TIME = 0.5  # How long to hold pose before countdown starts
 
@@ -25,16 +73,118 @@ POSE_HOLD_TIME = 0.5  # How long to hold pose before countdown starts
 # WIDE TOLERANCES for easier capture
 CAPTURE_TARGETS = [
     {"name": "Front", "yaw_range": (-25, 25), "pitch_range": (-20, 20), 
-     "icon": "Front", "instruction": "Look straight at the camera"},
+     "icon": "Front", "instruction": "Look straight at the camera", "audio": None},
     {"name": "Left", "yaw_range": (10, 50), "pitch_range": (-30, 30), 
-     "icon": "Left", "instruction": "Turn your head LEFT"},
+     "icon": "Left", "instruction": "Turn your head LEFT", "audio": "turn_left.mp3"},
     {"name": "Right", "yaw_range": (-50, -10), "pitch_range": (-30, 30), 
-     "icon": "Right", "instruction": "Turn your head RIGHT"},
+     "icon": "Right", "instruction": "Turn your head RIGHT", "audio": "turn_right.mp3"},
     {"name": "Up", "yaw_range": (-30, 30), "pitch_range": (-50, -15), 
-     "icon": "Up", "instruction": "Tilt your chin UP slightly"},
-    {"name": "Down", "yaw_range": (-40, 40), "pitch_range": (15, 50), 
-     "icon": "Down", "instruction": "Tilt your chin DOWN slightly"},
+     "icon": "Up", "instruction": "Tilt your chin UP slightly", "audio": "look_up.mp3"},
+    {"name": "Down", "yaw_range": (-40, 40), "pitch_range": (15,50 ), 
+     "icon": "Down", "instruction": "Tilt your chin DOWN slightly", "audio": "look_down.mp3"},
 ]
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class AudioPlayer:
+    """
+    Non-blocking audio player for enrollment cues.
+    Uses pygame.mixer for reliable cross-platform audio playback.
+    """
+    
+    def __init__(self, audio_dir=AUDIO_DIR):
+        self.audio_dir = audio_dir
+        self.enabled = AUDIO_AVAILABLE
+        self.last_played = {}  # Track last play time to avoid rapid repeats
+        self.min_repeat_interval = 2.0  # Minimum seconds between same audio
+        
+        # Pre-load audio files for faster playback
+        self.sounds = {}
+        if self.enabled:
+            self._preload_sounds()
+    
+    def _preload_sounds(self):
+        """Pre-load all audio files into memory."""
+        audio_files = [
+            "beep.mp3",
+            "capture_complete.mp3",
+            "hold_pose.mp3",
+            "look_down.mp3",
+            "look_up.mp3",
+            "turn_left.mp3",
+            "turn_right.mp3",
+        ]
+        
+        for filename in audio_files:
+            filepath = os.path.join(self.audio_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    self.sounds[filename] = pygame.mixer.Sound(filepath)
+                except Exception as e:
+                    print(f"⚠️ Could not load {filename}: {e}")
+    
+    def play(self, filename, force=False):
+        """
+        Play an audio file (non-blocking).
+        
+        Args:
+            filename: Name of audio file (e.g., "turn_left.mp3")
+            force: If True, play even if recently played
+        """
+        if not self.enabled or filename is None:
+            return
+        
+        # Check if we should skip due to recent play
+        now = time.time()
+        if not force and filename in self.last_played:
+            if now - self.last_played[filename] < self.min_repeat_interval:
+                return
+        
+        self.last_played[filename] = now
+        
+        # Play from preloaded sounds if available
+        if filename in self.sounds:
+            try:
+                self.sounds[filename].play()
+            except Exception as e:
+                print(f"⚠️ Audio playback error: {e}")
+        else:
+            # Fallback: try to load and play
+            filepath = os.path.join(self.audio_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    sound = pygame.mixer.Sound(filepath)
+                    sound.play()
+                except Exception as e:
+                    print(f"⚠️ Could not play {filename}: {e}")
+    
+    def play_direction(self, target_name):
+        """Play the appropriate direction audio for a capture target."""
+        audio_map = {
+            "Left": "turn_left.mp3",
+            "Right": "turn_right.mp3",
+            "Up": "look_up.mp3",
+            "Down": "look_down.mp3",
+        }
+        if target_name in audio_map:
+            self.play(audio_map[target_name])
+    
+    def play_hold(self):
+        """Play 'hold pose' audio."""
+        self.play("hold_pose.mp3")
+    
+    def play_beep(self):
+        """Play countdown beep."""
+        self.play("beep.mp3", force=True)
+    
+    def play_complete(self):
+        """Play capture complete audio."""
+        self.play("capture_complete.mp3", force=True)
+
+
+# Global audio player instance
+audio_player = AudioPlayer()
 
 
 class GuidedEnrollmentCapture:
@@ -45,20 +195,17 @@ class GuidedEnrollmentCapture:
         self.cap = None
         self.running = False
         self.camera_ready = False
-        self.current_frame = None      # Processed frame (with overlays) for display
-        self.raw_frame = None          # Raw frame (no overlays) for capture
+        self.current_frame = None      # Frame with UI overlays (for display)
+        self.raw_frame = None          # Clean frame without overlays (for DeepFace)
         self.frame_lock = threading.Lock()
         
-        # MediaPipe Face Mesh
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        # MediaPipe Face Mesh - DEFERRED initialization for Jetson performance
+        # Models won't load until start_camera() is called
+        self.mp_face_mesh = None
+        self.face_mesh = None
+        self.mp_drawing = None
+        self.mp_drawing_styles = None
+        self._mediapipe_initialized = False
         
         # Camera matrix (initialized on first frame)
         self.cam_matrix = None
@@ -95,16 +242,43 @@ class GuidedEnrollmentCapture:
         self.current_yaw = 0
         self.current_pitch = 0
         self.face_detected = False
+        
+        # Audio notification state
+        self.last_step_audio_played = -1  # Track which step's direction audio was played
+        self.hold_audio_played = False  # Track if hold_pose audio was played for current pose
+        self.last_countdown_beep = -1  # Track last countdown number that beeped
+        self.completion_audio_played = False  # Track if completion audio was played
+
+    def _init_mediapipe(self):
+        """Initialize MediaPipe models - called lazily to save resources on Jetson."""
+        if self._mediapipe_initialized:
+            return
+        
+        logger.info("🔄 Initializing MediaPipe Face Mesh...")
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_drawing_styles = mp.solutions.drawing_styles
+        self._mediapipe_initialized = True
+        logger.info("✅ MediaPipe initialized")
 
     def start_camera(self):
         """Start camera capture thread."""
         if self.running:
             return
         
+        # Initialize MediaPipe on first camera start (deferred for Jetson performance)
+        self._init_mediapipe()
+        
         self.cap = cv2.VideoCapture(self.camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 24)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
         
         if not self.cap.isOpened():
             return False
@@ -135,6 +309,12 @@ class GuidedEnrollmentCapture:
         self.last_pose_valid = False
         self.capture_complete = False
         self.enrollment_result = ""
+        
+        # Reset audio state
+        self.last_step_audio_played = -1
+        self.hold_audio_played = False
+        self.last_countdown_beep = -1
+        self.completion_audio_played = False
 
     def set_user_name(self, name):
         """Set the user name for enrollment."""
@@ -144,6 +324,18 @@ class GuidedEnrollmentCapture:
         """Draw text with outline for visibility."""
         cv2.putText(frame, text, pos, font, scale, (0, 0, 0), thickness + 3)
         cv2.putText(frame, text, pos, font, scale, color, thickness)
+
+    def _draw_border(self, frame, color, thickness=2):
+        """Draw a border around the frame with black outline for smooth look."""
+        h, w = frame.shape[:2]
+        margin = 8
+        # Outer black outline (drawn first)
+        cv2.rectangle(frame, (margin-2, margin-2), (w-margin+2, h-margin+2), (0, 0, 0), 1)
+        # Colored border
+        cv2.rectangle(frame, (margin, margin), (w-margin, h-margin), color, thickness)
+        # Inner black outline
+        cv2.rectangle(frame, (margin+thickness+1, margin+thickness+1), 
+                     (w-margin-thickness-1, h-margin-thickness-1), (0, 0, 0), 1)
 
     def _check_pose_match(self, yaw, pitch, target):
         """Check if current pose matches target."""
@@ -169,13 +361,13 @@ class GuidedEnrollmentCapture:
             
             # Only process every Nth frame to reduce CPU load
             if frame_count % process_every_n == 0:
-                # Store raw frame (flipped, but no overlays) for face capture
-                raw = cv2.flip(frame, 1)
+                # Store raw frame (flipped, no overlays) BEFORE processing
+                raw = cv2.flip(frame.copy(), 1)  # Mirror to match display
                 
                 processed = self._process_frame(frame)
                 
                 with self.frame_lock:
-                    self.raw_frame = raw.copy()  # Clean frame for DeepFace
+                    self.raw_frame = raw  # Clean frame for DeepFace
                     self.current_frame = processed  # Frame with overlays for display
             
             # Limit loop speed to target FPS
@@ -209,13 +401,18 @@ class GuidedEnrollmentCapture:
             self.face_detected = True
             face_landmarks = results.multi_face_landmarks[0]
             
-            # Draw face mesh overlay
+            # Draw face mesh overlay with thin lines
+            # Custom drawing specs for thinner appearance
+            thin_tesselation = self.mp_drawing.DrawingSpec(color=(128, 128, 128), thickness=1, circle_radius=0)
+            thin_contours = self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=0)
+            thin_iris = self.mp_drawing.DrawingSpec(color=(48, 255, 255), thickness=1, circle_radius=0)
+            
             self.mp_drawing.draw_landmarks(
                 image=frame,
                 landmark_list=face_landmarks,
                 connections=self.mp_face_mesh.FACEMESH_TESSELATION,
                 landmark_drawing_spec=None,
-                connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                connection_drawing_spec=thin_tesselation
             )
             
             self.mp_drawing.draw_landmarks(
@@ -223,7 +420,7 @@ class GuidedEnrollmentCapture:
                 landmark_list=face_landmarks,
                 connections=self.mp_face_mesh.FACEMESH_CONTOURS,
                 landmark_drawing_spec=None,
-                connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_contours_style()
+                connection_drawing_spec=thin_contours
             )
             
             self.mp_drawing.draw_landmarks(
@@ -231,7 +428,7 @@ class GuidedEnrollmentCapture:
                 landmark_list=face_landmarks,
                 connections=self.mp_face_mesh.FACEMESH_IRISES,
                 landmark_drawing_spec=None,
-                connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_iris_connections_style()
+                connection_drawing_spec=thin_iris
             )
             
             # Calculate head pose
@@ -281,10 +478,15 @@ class GuidedEnrollmentCapture:
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def _draw_capture_ui(self, frame, yaw, pitch):
-        """Draw the capture UI with instructions and countdown."""
+        """Draw the capture UI with instructions and countdown, with audio cues."""
         h, w = frame.shape[:2]
         
         if self.capture_complete:
+            # Play completion audio (once)
+            if not self.completion_audio_played:
+                audio_player.play_complete()
+                self.completion_audio_played = True
+            
             # Show completion message
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (w, h), (0, 100, 0), -1)
@@ -300,6 +502,19 @@ class GuidedEnrollmentCapture:
             return frame
         
         target = CAPTURE_TARGETS[self.current_step]
+        
+        # Play direction audio when step changes (once per step)
+        if self.current_step != self.last_step_audio_played:
+            self.last_step_audio_played = self.current_step
+            self.hold_audio_played = False  # Reset hold audio for new step
+            self.last_countdown_beep = -1  # Reset countdown beeps
+            
+            # Play the direction audio for this step
+            if target.get("audio"):
+                audio_player.play(target["audio"])
+            elif self.current_step == 0:
+                # For "Front" - play a beep to indicate start
+                audio_player.play_beep()
         
         # Progress bar at top
         progress_width = int((self.current_step / len(CAPTURE_TARGETS)) * w)
@@ -333,14 +548,22 @@ class GuidedEnrollmentCapture:
                 self._do_capture(frame)
                 self.countdown_active = False
             elif not still_locked:
-                # User moved too much - cancel countdown
+                # User moved too much - cancel countdown and reset audio state
                 self.countdown_active = False
+                self.hold_audio_played = False
+                self.last_countdown_beep = -1
                 self._put_text_outlined(frame, "Hold still! Try again...", (w//2 - 150, h - 60),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 100, 255), 2)
-                cv2.rectangle(frame, (10, 10), (w-10, h-10), (0, 100, 255), 4)
+                self._draw_border(frame, (0, 100, 255), 2)  # Orange border
+                
             else:
                 # Still locked in - show countdown
                 countdown_num = int(remaining) + 1
+                
+                # Play beep for each countdown number (once per number)
+                if countdown_num != self.last_countdown_beep:
+                    self.last_countdown_beep = countdown_num
+                    audio_player.play_beep()
                 
                 # Big countdown number
                 self._put_text_outlined(frame, str(countdown_num), (w//2 - 40, h//2 + 30),
@@ -352,7 +575,7 @@ class GuidedEnrollmentCapture:
                 cv2.ellipse(frame, (w//2, h//2), (100, 100), -90, 0, end_angle, (0, 255, 0), 8)
                 
                 # Green border during countdown
-                cv2.rectangle(frame, (10, 10), (w-10, h-10), (0, 255, 0), 4)
+                self._draw_border(frame, (0, 255, 0), 2)
         
         elif pose_valid:
             # Pose is correct - start building up to countdown
@@ -368,26 +591,34 @@ class GuidedEnrollmentCapture:
                 self.locked_yaw = yaw
                 self.locked_pitch = pitch
             else:
+                # Play hold pose audio (once per pose detection)
+                if not self.hold_audio_played:
+                    audio_player.play_hold()
+                    self.hold_audio_played = True
+                
                 # Pose correct, waiting to start countdown
                 self._put_text_outlined(frame, "HOLD STILL...", (w//2 - 100, h - 60),
                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 # Green border
-                cv2.rectangle(frame, (10, 10), (w-10, h-10), (0, 255, 0), 4)
+                self._draw_border(frame, (0, 255, 0), 2)
         else:
+            # Pose not correct - reset hold audio so it plays again when pose is correct
+            self.hold_audio_played = False
+            
             # Pose not correct - show guidance
             if not self.face_detected:
                 self._put_text_outlined(frame, "No face detected", (w//2 - 120, h - 60),
                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.rectangle(frame, (10, 10), (w-10, h-10), (0, 0, 255), 4)
+                self._draw_border(frame, (0, 0, 255), 2)  # Red border
             else:
                 # Show guidance arrows
                 self._draw_guidance(frame, yaw, pitch, target)
-                cv2.rectangle(frame, (10, 10), (w-10, h-10), (0, 165, 255), 3)
+                self._draw_border(frame, (0, 165, 255), 2)  # Orange border
         
         self.last_pose_valid = pose_valid
         
-        # Show captured thumbnails at bottom
-        self._draw_thumbnails(frame)
+        # Thumbnails now displayed in Gradio UI below video (not on frame)
+        # self._draw_thumbnails(frame)
         
         return frame
 
@@ -410,11 +641,12 @@ class GuidedEnrollmentCapture:
             hints.append("Turn RIGHT -->")
         
         # Pitch guidance (up/down)
-        # Normalized: positive pitch = up, negative pitch = down
+        # Note: Due to camera/pose calculation, pitch signs are inverted from intuition
+        # negative pitch = looking UP, positive pitch = looking DOWN
         if pitch < target["pitch_range"][0]:
-            hints.append("Look UP ^")    # Need higher pitch (more positive)
+            hints.append("Look DOWN v")  # Need more negative pitch
         elif pitch > target["pitch_range"][1]:
-            hints.append("Look DOWN v")  # Need lower pitch (more negative)
+            hints.append("Look UP ^")    # Need more positive pitch
         
         if hints:
             hint_text = " | ".join(hints)
@@ -423,6 +655,17 @@ class GuidedEnrollmentCapture:
             text_x = (w - text_size[0]) // 2
             self._put_text_outlined(frame, hint_text, (text_x, h - 50),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+
+    def _draw_checkmark(self, frame, cx, cy, size=10, color=(0, 255, 0), thickness=2):
+        """Draw a checkmark at the specified position."""
+        # Checkmark shape: short line down-left, then longer line down-right
+        pt1 = (cx - size, cy)
+        pt2 = (cx - size//3, cy + size//2)
+        pt3 = (cx + size, cy - size//2)
+        cv2.line(frame, pt1, pt2, (0, 0, 0), thickness + 2)  # Black outline
+        cv2.line(frame, pt2, pt3, (0, 0, 0), thickness + 2)
+        cv2.line(frame, pt1, pt2, color, thickness)  # Green checkmark
+        cv2.line(frame, pt2, pt3, color, thickness)
 
     def _draw_thumbnails(self, frame):
         """Draw captured photo thumbnails."""
@@ -435,60 +678,121 @@ class GuidedEnrollmentCapture:
         for i, captured in enumerate(self.captured_frames):
             x = start_x + i * (thumb_size + spacing)
             
-            # Resize and draw thumbnail (captured frames are BGR, same as display frame)
+            # Resize and draw thumbnail
             thumb = cv2.resize(captured, (thumb_size, thumb_size))
-            frame[y:y+thumb_size, x:x+thumb_size] = thumb
+            thumb_rgb = cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR)  # Convert back for drawing
+            frame[y:y+thumb_size, x:x+thumb_size] = thumb_rgb
             
-            # Green border
+            # Green border with black outline
+            cv2.rectangle(frame, (x-3, y-3), (x+thumb_size+3, y+thumb_size+3), (0, 0, 0), 1)  # Black outline
             cv2.rectangle(frame, (x-2, y-2), (x+thumb_size+2, y+thumb_size+2), (0, 255, 0), 2)
             
-            # Checkmark
-            cv2.putText(frame, "✓", (x + thumb_size - 20, y + 20),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # Draw checkmark (replaces Unicode ✓ which doesn't render in OpenCV)
+            self._draw_checkmark(frame, x + thumb_size - 12, y + 12, size=8, color=(0, 255, 0), thickness=2)
 
     def _do_capture(self, frame):
         """Capture the current frame."""
-        # Store the RAW frame (no overlays) for DeepFace processing
+        logger.info(f"📸 _do_capture called for step {self.current_step + 1}")
+        
+        # Store the RAW frame (no UI overlays) for DeepFace processing
         with self.frame_lock:
             if self.raw_frame is not None:
-                self.captured_frames.append(self.raw_frame.copy())
+                captured = self.raw_frame.copy()  # Use raw frame, not current_frame!
+                self.captured_frames.append(captured)
+                logger.info(f"✅ RAW frame captured! Shape: {captured.shape}, dtype: {captured.dtype}")
+                logger.info(f"   Total captured frames: {len(self.captured_frames)}")
+            else:
+                logger.warning("⚠️ raw_frame is None - nothing captured!")
         
         self.current_step += 1
+        logger.info(f"   Moving to step {self.current_step}")
         
         if self.current_step >= len(CAPTURE_TARGETS):
+            logger.info("🎉 All captures complete! Starting enrollment...")
             self.capture_complete = True
             # Trigger enrollment in background
             threading.Thread(target=self._process_enrollment, daemon=True).start()
 
     def _process_enrollment(self):
         """Process the captured frames for enrollment."""
+        logger.info("="*50)
+        logger.info("🔄 Starting _process_enrollment")
+        logger.info(f"   User name: '{self.user_name}'")
+        logger.info(f"   Captured frames count: {len(self.captured_frames)}")
+        
         if not self.user_name:
+            logger.error("❌ No user name provided!")
             self.enrollment_result = "❌ No name provided"
             return
         
+        if len(self.captured_frames) == 0:
+            logger.error("❌ No frames were captured!")
+            self.enrollment_result = "❌ No frames captured"
+            return
+        
         os.makedirs(OUTPUT_DIR, exist_ok=True)
+        logger.info(f"   Output directory: {OUTPUT_DIR}")
+        
+        # Save debug images to see what was captured
+        debug_dir = os.path.join(OUTPUT_DIR, f"{self.user_name}_debug")
+        os.makedirs(debug_dir, exist_ok=True)
         
         embeddings = []
         for i, frame in enumerate(self.captured_frames):
+            logger.info(f"   Processing frame {i+1}/{len(self.captured_frames)}")
+            logger.info(f"      Frame shape: {frame.shape}, dtype: {frame.dtype}")
+            
             try:
-                # Raw frames are already in BGR format from OpenCV
-                result = DeepFace.represent(
-                    img_path=frame,
-                    model_name=CHOSEN_MODEL,
-                    enforce_detection=True,
-                    align=True
-                )
+                # Save debug image
+                debug_path = os.path.join(debug_dir, f"frame_{i+1}.jpg")
+                # Raw frame is already BGR from OpenCV
+                cv2.imwrite(debug_path, frame)
+                logger.info(f"      Saved debug image: {debug_path}")
+                
+                # Raw frame is already BGR - use directly for DeepFace
+                bgr_frame = frame  # Already BGR from cv2.VideoCapture
+                logger.info(f"      Calling DeepFace.represent with detector={CHOSEN_DETECTOR}...")
+                
+                try:
+                    # First try with enforce_detection=True
+                    result = DeepFace.represent(
+                        img_path=bgr_frame,
+                        model_name=CHOSEN_MODEL,
+                        detector_backend=CHOSEN_DETECTOR,
+                        enforce_detection=True,
+                        align=True
+                    )
+                except ValueError:
+                    # MediaPipe already confirmed face exists, so retry without strict detection
+                    logger.warning(f"      ⚠️ Detector failed, retrying with enforce_detection=False...")
+                    result = DeepFace.represent(
+                        img_path=bgr_frame,
+                        model_name=CHOSEN_MODEL,
+                        detector_backend="skip",  # Skip detection, use whole image
+                        enforce_detection=False,
+                        align=False
+                    )
+                
                 embeddings.append(result[0]["embedding"])
+                logger.info(f"      ✅ Face detected! Embedding length: {len(result[0]['embedding'])}")
             except Exception as e:
-                pass  # Skip failed frames
+                logger.error(f"      ❌ DeepFace failed: {type(e).__name__}: {e}")
+        
+        logger.info(f"   Total successful embeddings: {len(embeddings)}/{len(self.captured_frames)}")
         
         if len(embeddings) >= 2:
             master_embedding = np.mean(embeddings, axis=0)
             
+            # Normalize embedding for cosine similarity matching
+            norm = np.linalg.norm(master_embedding)
+            normalized_embedding = master_embedding / norm if norm > 0 else master_embedding
+            
             data = {
                 "name": self.user_name,
                 "model": CHOSEN_MODEL,
-                "embedding": master_embedding,
+                "detector": CHOSEN_DETECTOR,
+                "embedding": master_embedding,           # Raw embedding
+                "embedding_normalized": normalized_embedding,  # For fast cosine similarity
                 "image_count": len(embeddings)
             }
             
@@ -496,9 +800,14 @@ class GuidedEnrollmentCapture:
             with open(output_path, "wb") as f:
                 pickle.dump(data, f)
             
+            logger.info(f"✅ Enrollment saved to: {output_path}")
+            logger.info(f"   Embedding shape: {master_embedding.shape}")
             self.enrollment_result = f"✅ SUCCESS! {self.user_name} enrolled with {len(embeddings)} photos."
         else:
+            logger.error(f"❌ Not enough valid faces: {len(embeddings)}")
             self.enrollment_result = f"❌ Failed - only {len(embeddings)} valid faces detected."
+        
+        logger.info("="*50)
 
     def get_frame_and_status(self):
         """Get current frame and status for Gradio."""
@@ -556,9 +865,17 @@ def go_back():
 
 
 def get_camera_feed():
-    """Poll camera feed."""
+    """Poll camera feed and thumbnails."""
     frame, status, progress, complete, result = capture_system.get_frame_and_status()
-    return frame, status, progress
+    
+    # Get thumbnails (convert BGR to RGB for Gradio display)
+    thumbnails = [None, None, None, None, None]
+    for i, captured in enumerate(capture_system.captured_frames):
+        if i < 5:
+            # captured frames are BGR from OpenCV, convert to RGB for Gradio
+            thumbnails[i] = cv2.cvtColor(captured, cv2.COLOR_BGR2RGB)
+    
+    return frame, status, progress, thumbnails[0], thumbnails[1], thumbnails[2], thumbnails[3], thumbnails[4]
 
 
 def check_completion():
@@ -592,29 +909,47 @@ def create_blocks():
     else:
         # Older versions - use minimal args
         return gr.Blocks()
+# Convert logo to base64 for inline markdown display
+logo_path = os.path.join(os.path.dirname(__file__), "images", "logo.png")
+logo_base64 = get_image_base64(logo_path)
 
 with create_blocks() as demo:
-    
+
     # ========================================================================
     # SCREEN 1: Welcome / Name Entry
     # ========================================================================
     with gr.Column(visible=True, elem_classes=["welcome-container"]) as welcome_screen:
-        gr.Markdown("""
-        # 👋 Welcome to Face Enrollment
-        
-        This will take **5 quick photos** of your face from different angles 
-        to set up your profile.
-        
-        ---
-        
-        ### How it works:
-        1. **Enter your name** below
-        2. **Follow the on-screen prompts** - just move your head as instructed
-        3. **Hold still** when the border turns green
-        4. The camera will **automatically capture** after a 3-second countdown
-        
-        ---
+        gr.HTML(f"""
+        <div style="display:flex; align-items:center; gap:15px; margin-bottom:20px; justify-content: center;">
+            <img src="{logo_base64}" alt="QRyde Logo" class="logo" style="height:150px; margin-right:12%;" />
+            <h1 style="margin:0; font-size:2em;">Welcome to QRyde Face Enrollment</h1>
+        </div>
         """)
+        gr.Markdown("""
+            <p style="
+                color: #28a745; 
+                font-size: 1.4em; 
+                font-weight: bold; 
+                text-align: center;
+                text-shadow: -1px -1px 0 #10421B, 1px -1px 0 #10421B, -1px 1px 0 #10421B, 1px 1px 0 #10421B;
+            ">
+                To help with product development, we would like to capture your face and use it to train a model to recognize you.
+            </p>
+
+            <p style="font-size:1.2em; font-weight:bold; text-align: center;">
+                This will take <strong>5 quick photos</strong> of your face from different angles to set up your profile.
+            </p> 
+            
+            ---
+            
+            ### How it works:
+            1. **Enter your name** below
+            2. **Follow the on-screen prompts** - just move your head as instructed
+            3. **Hold still** when the border turns green
+            4. The camera will **automatically capture** after a 3-second countdown
+            
+            ---
+            """)
         
         name_input = gr.Textbox(
             label="Your Name",
@@ -659,6 +994,15 @@ with create_blocks() as demo:
             show_label=False
         )
         
+        # Thumbnail row below video
+        gr.Markdown("### Captured Photos")
+        with gr.Row():
+            thumb_1 = gr.Image(label="1. Front", height=120, show_label=True, visible=True)
+            thumb_2 = gr.Image(label="2. Left", height=120, show_label=True, visible=True)
+            thumb_3 = gr.Image(label="3. Right", height=120, show_label=True, visible=True)
+            thumb_4 = gr.Image(label="4. Up", height=120, show_label=True, visible=True)
+            thumb_5 = gr.Image(label="5. Down", height=120, show_label=True, visible=True)
+        
         # Completion panel (hidden until done)
         with gr.Column(visible=False) as completion_panel:
             completion_msg = gr.Markdown("")
@@ -700,7 +1044,8 @@ with create_blocks() as demo:
     # Camera feed timer
     camera_timer.tick(
         fn=get_camera_feed,
-        outputs=[camera_feed, status_display, progress_display]
+        outputs=[camera_feed, status_display, progress_display, 
+                 thumb_1, thumb_2, thumb_3, thumb_4, thumb_5]
     )
     
     # Completion check timer

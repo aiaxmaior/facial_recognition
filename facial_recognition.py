@@ -1375,6 +1375,109 @@ class DeepStreamMultiSource:
 
 
 # =============================================================================
+# LIVE STREAM RECOGNIZER (Uses pkl database - FAST)
+# =============================================================================
+
+class LiveStreamRecognizer:
+    """
+    Continuous live stream face recognition using pkl embedding database.
+    Much faster than DeepFace.stream() because it uses pre-computed embeddings.
+    """
+    
+    def __init__(self, face_system: FaceAuthSystem, camera_index: int = 0):
+        self.face_system = face_system
+        self.camera_index = camera_index
+        self.cap = None
+        self.running = False
+        self.current_frame = None
+        self.current_result = {"name": "Initializing...", "distance": 0, "is_match": False}
+        self.frame_lock = threading.Lock()
+        self.last_recognition_time = 0
+        self.recognition_interval = 0.5  # Recognize every 0.5 seconds
+        
+    def start(self):
+        """Start the live stream."""
+        if self.running:
+            return "Already running"
+        
+        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 24)
+        
+        if not self.cap.isOpened():
+            return "❌ Failed to open camera"
+        
+        self.running = True
+        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.capture_thread.start()
+        return "✅ Live stream started"
+    
+    def stop(self):
+        """Stop the live stream."""
+        self.running = False
+        if self.cap:
+            self.cap.release()
+        return "Stream stopped"
+    
+    def _capture_loop(self):
+        """Main capture and recognition loop."""
+        while self.running and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+            
+            frame = cv2.flip(frame, 1)  # Mirror
+            display_frame = frame.copy()
+            
+            # Run recognition periodically (not every frame to save CPU)
+            current_time = time.time()
+            if current_time - self.last_recognition_time >= self.recognition_interval:
+                self.last_recognition_time = current_time
+                
+                try:
+                    name, distance, is_match = self.face_system.match_from_frame(frame)
+                    self.current_result = {"name": name, "distance": distance, "is_match": is_match}
+                except Exception as e:
+                    self.current_result = {"name": "Error", "distance": 0, "is_match": False}
+            
+            # Draw result on frame
+            result = self.current_result
+            if result["name"] != "No Face" and result["name"] != "Error":
+                if result["is_match"]:
+                    # Green box and text for match
+                    color = (0, 255, 0)
+                    text = f"MATCH: {result['name']} ({result['distance']:.3f})"
+                else:
+                    # Orange for no match
+                    color = (0, 165, 255)
+                    text = f"Unknown ({result['name']}: {result['distance']:.3f})"
+                
+                cv2.rectangle(display_frame, (10, 10), (630, 70), color, 2)
+                cv2.putText(display_frame, text, (20, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            else:
+                # Gray for no face
+                cv2.putText(display_frame, "No face detected", (20, 50),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, (150, 150, 150), 2)
+            
+            # Convert to RGB for Gradio
+            with self.frame_lock:
+                self.current_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            
+            time.sleep(0.033)  # ~30 FPS display
+    
+    def get_frame(self):
+        """Get current frame for Gradio display."""
+        with self.frame_lock:
+            if self.current_frame is not None:
+                result = self.current_result
+                status = f"{result['name']} | Distance: {result['distance']:.4f} | Match: {result['is_match']}"
+                return self.current_frame, status
+        return None, "Waiting for camera..."
+
+
+# =============================================================================
 # GRADIO INTERFACE
 # =============================================================================
 
@@ -1642,23 +1745,42 @@ class GradioInterface:
                 
                 cam_btn.click(fn=self._camera_stream_verify, outputs=[cam_output_img, cam_output_log])
             
-            # Tab 1b: DeepFace Stream
-            with gr.Tab("🎬 DeepFace Stream"):
+            # Tab 1b: Live Stream Recognition (Fast - uses pkl database)
+            with gr.Tab("🎬 Live Stream"):
                 gr.Markdown("""
-                ### Real-time Stream Analysis
-                Uses `DeepFace.stream()` for continuous real-time face recognition.
+                ### ⚡ Continuous Live Recognition
+                Real-time face recognition using pre-computed embeddings (pkl database).
                 
-                ⚠️ **Note:** This opens a separate OpenCV window and runs in blocking mode.
+                **Much faster** than DeepFace.stream() - uses vectorized matching!
                 """)
-                stream_db_path = gr.Textbox(
-                    label="Database Path",
-                    placeholder="Path to folder containing person subfolders with images",
-                    value=self.system.db_folder
-                )
-                stream_btn = gr.Button("▶️ Start DeepFace Stream", variant="primary")
-                stream_output = gr.Textbox(label="Status", lines=3, interactive=False)
                 
-                stream_btn.click(fn=self._start_deepface_stream, inputs=[stream_db_path], outputs=[stream_output])
+                # Initialize live stream recognizer
+                live_stream = LiveStreamRecognizer(self.system, camera_index=0)
+                
+                with gr.Row():
+                    live_start_btn = gr.Button("▶️ Start Live Stream", variant="primary", size="lg")
+                    live_stop_btn = gr.Button("⏹️ Stop", variant="stop", size="lg")
+                
+                live_status = gr.Textbox(label="Status", value="Click Start to begin", interactive=False)
+                live_video = gr.Image(label="Live Feed", height=480)
+                live_result = gr.Textbox(label="Recognition Result", interactive=False)
+                
+                def start_live():
+                    return live_stream.start()
+                
+                def stop_live():
+                    return live_stream.stop()
+                
+                def get_live_frame():
+                    frame, status = live_stream.get_frame()
+                    return frame, status
+                
+                live_start_btn.click(fn=start_live, outputs=[live_status])
+                live_stop_btn.click(fn=stop_live, outputs=[live_status])
+                
+                # Timer to poll frames
+                live_timer = gr.Timer(value=0.1)  # 10 FPS polling
+                live_timer.tick(fn=get_live_frame, outputs=[live_video, live_result])
             
             # Tab 2: Manual Verification
             with gr.Tab("📤 Manual Verification"):
