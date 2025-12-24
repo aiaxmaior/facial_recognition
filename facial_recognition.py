@@ -707,6 +707,7 @@ class DeepStreamProcessor:
     SOURCE_TYPE_USB = "usb"
     SOURCE_TYPE_FILE = "file"
     SOURCE_TYPE_CSI = "csi"
+    SOURCE_TYPE_BAYER = "bayer"  # For Bayer/RAW cameras like RG10
     
     def __init__(
         self,
@@ -770,6 +771,9 @@ class DeepStreamProcessor:
         """Detect the type of video source."""
         if source.startswith("rtsp://") or source.startswith("rtspt://"):
             return self.SOURCE_TYPE_RTSP
+        elif source.startswith("bayer://") or source == "bayer":
+            # Explicit Bayer camera mode: bayer:///dev/video2 or just "bayer"
+            return self.SOURCE_TYPE_BAYER
         elif source.startswith("/dev/video"):
             return self.SOURCE_TYPE_USB
         elif source == "csi" or source.startswith("csi://"):
@@ -797,6 +801,8 @@ class DeepStreamProcessor:
             pipeline = self._create_usb_pipeline(source)
         elif source_type == self.SOURCE_TYPE_CSI:
             pipeline = self._create_csi_pipeline()
+        elif source_type == self.SOURCE_TYPE_BAYER:
+            pipeline = self._create_bayer_pipeline(source)
         elif source_type == self.SOURCE_TYPE_FILE:
             pipeline = self._create_file_pipeline(source)
         
@@ -836,7 +842,7 @@ class DeepStreamProcessor:
         return pipeline
     
     def _create_usb_pipeline(self, device: str):
-        """Create pipeline for USB camera."""
+        """Create pipeline for USB camera (including Bayer/RAW formats)."""
         # Handle both /dev/videoX and integer index
         if device.startswith("/dev/video"):
             device_path = device
@@ -847,22 +853,67 @@ class DeepStreamProcessor:
             except ValueError:
                 device_path = "/dev/video0"
         
+        # Simple pipeline using CPU conversion (more compatible, avoids argus issues)
+        # Works with most USB cameras and V4L2 devices
         pipeline_str = f"""
-            v4l2src device={device_path} ! 
-            video/x-raw,width=640,height=480,framerate=30/1 ! 
+            v4l2src device={device_path} do-timestamp=true ! 
+            video/x-raw ! 
             videoconvert ! 
-            video/x-raw,format=BGR ! 
+            videoscale ! 
+            video/x-raw,format=BGR,width=640,height=480 ! 
             appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
         """
         
         if self.display_output:
             pipeline_str = f"""
-                v4l2src device={device_path} ! 
-                video/x-raw,width=640,height=480,framerate=30/1 ! 
+                v4l2src device={device_path} do-timestamp=true ! 
+                video/x-raw ! 
+                videoconvert ! 
+                videoscale ! 
+                video/x-raw,width=640,height=480 ! 
                 tee name=t
                 t. ! queue ! videoconvert ! video/x-raw,format=BGR ! 
                     appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
-                t. ! queue ! videoconvert ! xvimagesink sync=false
+                t. ! queue ! videoconvert ! autovideosink sync=false
+            """
+        
+        pipeline = Gst.parse_launch(pipeline_str)
+        return pipeline
+    
+    def _create_bayer_pipeline(self, source: str):
+        """Create pipeline for Bayer/RAW cameras (RG10, RG12, etc.) using software debayer."""
+        # Extract device path from bayer:///dev/videoX format
+        if source.startswith("bayer://"):
+            device_path = source[8:]  # Remove "bayer://"
+        elif source == "bayer":
+            device_path = "/dev/video2"  # Default
+        else:
+            device_path = "/dev/video2"
+        
+        # Use bayer2rgb for software debayering (works without argus daemon)
+        # bayer2rgb converts Bayer pattern to RGB
+        pipeline_str = f"""
+            v4l2src device={device_path} do-timestamp=true ! 
+            video/x-raw,format=RG10 ! 
+            bayer2rgb ! 
+            videoconvert ! 
+            videoscale ! 
+            video/x-raw,format=BGR,width=640,height=480 ! 
+            appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+        """
+        
+        if self.display_output:
+            pipeline_str = f"""
+                v4l2src device={device_path} do-timestamp=true ! 
+                video/x-raw,format=RG10 ! 
+                bayer2rgb ! 
+                videoconvert ! 
+                videoscale ! 
+                video/x-raw,width=640,height=480 ! 
+                tee name=t
+                t. ! queue ! videoconvert ! video/x-raw,format=BGR ! 
+                    appsink name=sink emit-signals=true sync=false max-buffers=1 drop=true
+                t. ! queue ! videoconvert ! autovideosink sync=false
             """
         
         pipeline = Gst.parse_launch(pipeline_str)
