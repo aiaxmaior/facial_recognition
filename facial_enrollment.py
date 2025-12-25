@@ -248,6 +248,16 @@ class GuidedEnrollmentCapture:
         self.hold_audio_played = False  # Track if hold_pose audio was played for current pose
         self.last_countdown_beep = -1  # Track last countdown number that beeped
         self.completion_audio_played = False  # Track if completion audio was played
+        
+        # Advisory audio state (rate-limited guidance)
+        self.last_advisory_audio_time = 0      # Timestamp of last advisory audio
+        self.advisory_audio_count = 0          # Count of audio prompts this capture
+        self.advisory_audio_interval = 2.0     # Seconds between audio prompts
+        self.advisory_audio_max = 5            # Max prompts per capture (10 seconds total)
+        
+        # Stability tracking for countdown trigger
+        self.stable_frame_count = 0            # Consecutive frames in correct position
+        self.stable_frame_threshold = 10       # Frames required before countdown starts (~0.67s at 15fps)
 
     def _init_mediapipe(self):
         """Initialize MediaPipe models - called lazily to save resources on Jetson."""
@@ -315,6 +325,13 @@ class GuidedEnrollmentCapture:
         self.hold_audio_played = False
         self.last_countdown_beep = -1
         self.completion_audio_played = False
+        
+        # Reset advisory audio state
+        self.last_advisory_audio_time = 0
+        self.advisory_audio_count = 0
+        
+        # Reset stability tracking
+        self.stable_frame_count = 0
 
     def set_user_name(self, name):
         """Set the user name for enrollment."""
@@ -578,31 +595,46 @@ class GuidedEnrollmentCapture:
                 self._draw_border(frame, (0, 255, 0), 2)
         
         elif pose_valid:
-            # Pose is correct - start building up to countdown
-            if not self.last_pose_valid:
-                self.pose_held_since = time.time()
+            # Pose is correct - increment stability counter
+            self.stable_frame_count += 1
             
-            hold_duration = time.time() - self.pose_held_since
+            # Reset advisory audio count when pose is achieved
+            self.advisory_audio_count = 0
             
-            if hold_duration >= POSE_HOLD_TIME:
-                # Start countdown and LOCK IN current pose
-                self.countdown_active = True
-                self.countdown_start = time.time()
-                self.locked_yaw = yaw
-                self.locked_pitch = pitch
-            else:
-                # Play hold pose audio (once per pose detection)
-                if not self.hold_audio_played:
-                    audio_player.play_hold()
-                    self.hold_audio_played = True
+            # Check if stable for enough frames before starting countdown
+            if self.stable_frame_count >= self.stable_frame_threshold:
+                # Stable enough - start building up to countdown
+                if not self.last_pose_valid or self.stable_frame_count == self.stable_frame_threshold:
+                    self.pose_held_since = time.time()
                 
-                # Pose correct, waiting to start countdown
-                self._put_text_outlined(frame, "HOLD STILL...", (w//2 - 100, h - 60),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                # Green border
-                self._draw_border(frame, (0, 255, 0), 2)
+                hold_duration = time.time() - self.pose_held_since
+                
+                if hold_duration >= POSE_HOLD_TIME:
+                    # Start countdown and LOCK IN current pose
+                    self.countdown_active = True
+                    self.countdown_start = time.time()
+                    self.locked_yaw = yaw
+                    self.locked_pitch = pitch
+                else:
+                    # Play hold pose audio (once per pose detection)
+                    if not self.hold_audio_played:
+                        audio_player.play_hold()
+                        self.hold_audio_played = True
+                    
+                    # Pose correct and stable, waiting to start countdown
+                    self._put_text_outlined(frame, "HOLD STILL...", (w//2 - 100, h - 60),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    # Green border
+                    self._draw_border(frame, (0, 255, 0), 2)
+            else:
+                # Pose correct but not stable yet - show stabilizing message
+                self._put_text_outlined(frame, "Hold steady...", (w//2 - 100, h - 60),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 200), 2)
+                # Cyan border (transitioning)
+                self._draw_border(frame, (200, 200, 0), 2)
         else:
-            # Pose not correct - reset hold audio so it plays again when pose is correct
+            # Pose not correct - reset stability and hold audio
+            self.stable_frame_count = 0
             self.hold_audio_played = False
             
             # Pose not correct - show guidance
@@ -623,38 +655,126 @@ class GuidedEnrollmentCapture:
         return frame
 
     def _draw_guidance(self, frame, yaw, pitch, target):
-        """Draw arrows to guide user to correct pose."""
+        """Draw contextual, magnitude-aware guidance with rate-limited audio."""
         h, w = frame.shape[:2]
+        target_name = target["name"]
         
         # Show current pose values for debugging (small text in corner)
-        debug_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f}"
+        debug_text = f"Yaw:{yaw:.0f} Pitch:{pitch:.0f} Stable:{self.stable_frame_count}"
         self._put_text_outlined(frame, debug_text, (10, h - 10),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
-        # Determine which way to move (use ASCII-safe arrows)
+        yaw_min, yaw_max = target["yaw_range"]
+        pitch_min, pitch_max = target["pitch_range"]
+        
+        # Calculate deviations
+        yaw_low = yaw < yaw_min
+        yaw_high = yaw > yaw_max
+        pitch_low = pitch < pitch_min
+        pitch_high = pitch > pitch_max
+        
+        yaw_ok = not yaw_low and not yaw_high
+        pitch_ok = not pitch_low and not pitch_high
+        
         hints = []
+        audio_hint = None  # For rate-limited audio
         
-        # Yaw guidance (left/right) - positive yaw = looking left
-        if yaw < target["yaw_range"][0]:
-            hints.append("<-- Turn LEFT")
-        elif yaw > target["yaw_range"][1]:
-            hints.append("Turn RIGHT -->")
+        # Context-specific guidance based on target
+        if target_name == "Left":
+            # Primary axis is yaw (need positive yaw 10-50)
+            if yaw_ok:
+                if not pitch_ok:
+                    hints.append("Good turn! Level your chin")
+            else:
+                if yaw_high:  # Too far left (>50)
+                    hints.append("Too far! Come back RIGHT")
+                    audio_hint = "turn_right.mp3"
+                else:  # Not far enough (<10)
+                    deviation = yaw_min - yaw
+                    if deviation > 15:
+                        hints.append("Keep turning LEFT")
+                    else:
+                        hints.append("Almost! A bit more LEFT")
+                    audio_hint = "turn_left.mp3"
+                    
+        elif target_name == "Right":
+            # Primary axis is yaw (need negative yaw -50 to -10)
+            if yaw_ok:
+                if not pitch_ok:
+                    hints.append("Good turn! Level your chin")
+            else:
+                if yaw_low:  # Too far right (<-50)
+                    hints.append("Too far! Come back LEFT")
+                    audio_hint = "turn_left.mp3"
+                else:  # Not far enough (>-10)
+                    deviation = yaw - yaw_max
+                    if deviation > 15:
+                        hints.append("Keep turning RIGHT")
+                    else:
+                        hints.append("Almost! A bit more RIGHT")
+                    audio_hint = "turn_right.mp3"
+                    
+        elif target_name == "Up":
+            # Primary axis is pitch (need negative pitch -50 to -15)
+            if pitch_ok:
+                if not yaw_ok:
+                    hints.append("Good tilt! Face forward")
+            else:
+                if pitch_low:  # Too far up (<-50)
+                    hints.append("Too far! Lower chin slightly")
+                    audio_hint = "look_down.mp3"
+                else:  # Not far enough (>-15)
+                    deviation = pitch - pitch_max
+                    if deviation > 15:
+                        hints.append("Tilt chin UP more")
+                    else:
+                        hints.append("Almost! A bit more UP")
+                    audio_hint = "look_up.mp3"
+                    
+        elif target_name == "Down":
+            # Primary axis is pitch (need positive pitch 15 to 50)
+            if pitch_ok:
+                if not yaw_ok:
+                    hints.append("Good tilt! Face forward")
+            else:
+                if pitch_high:  # Too far down (>50)
+                    hints.append("Too far! Raise chin slightly")
+                    audio_hint = "look_up.mp3"
+                else:  # Not far enough (<15)
+                    deviation = pitch_min - pitch
+                    if deviation > 15:
+                        hints.append("Tilt chin DOWN more")
+                    else:
+                        hints.append("Almost! A bit more DOWN")
+                    audio_hint = "look_down.mp3"
+                    
+        else:
+            # Front or unknown - use simple guidance
+            if yaw_low:
+                hints.append("<-- Turn LEFT")
+            elif yaw_high:
+                hints.append("Turn RIGHT -->")
+            if pitch_low:
+                hints.append("Look DOWN v")
+            elif pitch_high:
+                hints.append("Look UP ^")
         
-        # Pitch guidance (up/down)
-        # Note: Due to camera/pose calculation, pitch signs are inverted from intuition
-        # negative pitch = looking UP, positive pitch = looking DOWN
-        if pitch < target["pitch_range"][0]:
-            hints.append("Look DOWN v")  # Need more negative pitch
-        elif pitch > target["pitch_range"][1]:
-            hints.append("Look UP ^")    # Need more positive pitch
-        
+        # Display visual hints
         if hints:
             hint_text = " | ".join(hints)
-            # Center the text better
             text_size = cv2.getTextSize(hint_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
             text_x = (w - text_size[0]) // 2
             self._put_text_outlined(frame, hint_text, (text_x, h - 50),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
+        
+        # Rate-limited audio feedback
+        if audio_hint and self.advisory_audio_count < self.advisory_audio_max:
+            current_time = time.time()
+            if current_time - self.last_advisory_audio_time >= self.advisory_audio_interval:
+                audio_player.play(audio_hint)
+                self.last_advisory_audio_time = current_time
+                self.advisory_audio_count += 1
+                logger.debug(f"Advisory audio {self.advisory_audio_count}/{self.advisory_audio_max}: {audio_hint}")
 
     def _draw_checkmark(self, frame, cx, cy, size=10, color=(0, 255, 0), thickness=2):
         """Draw a checkmark at the specified position."""
@@ -706,6 +826,11 @@ class GuidedEnrollmentCapture:
         
         self.current_step += 1
         logger.info(f"   Moving to step {self.current_step}")
+        
+        # Reset advisory and stability state for next capture
+        self.last_advisory_audio_time = 0
+        self.advisory_audio_count = 0
+        self.stable_frame_count = 0
         
         if self.current_step >= len(CAPTURE_TARGETS):
             logger.info("🎉 All captures complete! Starting enrollment...")
