@@ -34,8 +34,93 @@ os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 import gradio as gr
 import threading
-import pickle
+import sqlite3
+import json
 from deepface import DeepFace
+
+
+# ============================================================================
+# SAFE DATABASE STORAGE (SQLite - no code execution risk unlike pickle)
+# ============================================================================
+
+def init_face_database(db_path):
+    """Initialize the SQLite database for face embeddings."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            model TEXT NOT NULL,
+            detector TEXT,
+            embedding BLOB NOT NULL,
+            embedding_normalized BLOB,
+            image_count INTEGER,
+            enrolled_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def save_face_embedding(db_path, name, model, detector, embedding, embedding_normalized, image_count):
+    """Save a face embedding to the SQLite database."""
+    import datetime
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Convert numpy arrays to bytes
+    embedding_bytes = embedding.astype(np.float32).tobytes()
+    normalized_bytes = embedding_normalized.astype(np.float32).tobytes() if embedding_normalized is not None else None
+    
+    # Insert or replace (update if name exists)
+    cursor.execute("""
+        INSERT OR REPLACE INTO faces 
+        (name, model, detector, embedding, embedding_normalized, image_count, enrolled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        name,
+        model,
+        detector,
+        embedding_bytes,
+        normalized_bytes,
+        image_count,
+        datetime.datetime.now().isoformat()
+    ))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+
+def load_all_face_embeddings(db_path, model_filter=None):
+    """Load all face embeddings from the SQLite database."""
+    if not os.path.exists(db_path):
+        return {}
+    
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    if model_filter:
+        cursor.execute("SELECT * FROM faces WHERE model = ?", (model_filter,))
+    else:
+        cursor.execute("SELECT * FROM faces")
+    
+    faces = {}
+    for row in cursor.fetchall():
+        embedding = np.frombuffer(row['embedding'], dtype=np.float32)
+        faces[row['name']] = {
+            'embedding': embedding,
+            'model': row['model'],
+            'detector': row['detector'],
+            'image_count': row['image_count'],
+            'enrolled_at': row['enrolled_at']
+        }
+    
+    conn.close()
+    return faces
 
 
 def get_image_base64(image_path):
@@ -289,7 +374,7 @@ class GuidedEnrollmentCapture:
         # Advisory audio state (rate-limited guidance)
         self.last_advisory_audio_time = 0      # Timestamp of last advisory audio
         self.advisory_audio_count = 0          # Count of audio prompts this capture
-        self.advisory_audio_interval = 4.0     # Seconds between audio prompts
+        self.advisory_audio_interval = 3.0     # Seconds between audio prompts
         self.advisory_audio_max = 5            # Max prompts per capture (10 seconds total)
         
         # Stability tracking for countdown trigger
@@ -976,20 +1061,22 @@ class GuidedEnrollmentCapture:
             norm = np.linalg.norm(master_embedding)
             normalized_embedding = master_embedding / norm if norm > 0 else master_embedding
             
-            data = {
-                "name": self.user_name,
-                "model": CHOSEN_MODEL,
-                "detector": CHOSEN_DETECTOR,
-                "embedding": master_embedding,           # Raw embedding
-                "embedding_normalized": normalized_embedding,  # For fast cosine similarity
-                "image_count": len(embeddings)
-            }
+            # Save to SQLite database (safe - no code execution risk like pickle)
+            db_path = os.path.join(OUTPUT_DIR, "faces.db")
+            init_face_database(db_path)
             
-            output_path = os.path.join(OUTPUT_DIR, f"{self.user_name}_deepface.pkl")
-            with open(output_path, "wb") as f:
-                pickle.dump(data, f)
+            save_face_embedding(
+                db_path=db_path,
+                name=self.user_name,
+                model=CHOSEN_MODEL,
+                detector=CHOSEN_DETECTOR,
+                embedding=master_embedding,
+                embedding_normalized=normalized_embedding,
+                image_count=len(embeddings)
+            )
             
-            logger.info(f"✅ Enrollment saved to: {output_path}")
+            logger.info(f"✅ Enrollment saved to: {db_path}")
+            logger.info(f"   User: {self.user_name}")
             logger.info(f"   Embedding shape: {master_embedding.shape}")
             self.enrollment_result = f"✅ SUCCESS! {self.user_name} enrolled with {len(embeddings)} photos."
         else:
@@ -1133,13 +1220,48 @@ def create_blocks():
     if major_version >= 4:
         return gr.Blocks(
             title="Face Enrollment",
-            theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate").set(
+            theme=gr.themes.Soft(primary_hue="blue", neutral_hue="neutral").set(
                 body_background_fill="*neutral_950",
                 body_background_fill_dark="*neutral_950",
                 block_background_fill="*neutral_900",
                 block_background_fill_dark="*neutral_900",
             ),
             css="""
+                /* Force dark mode colors consistently across all browsers */
+                :root, .dark, .gradio-container {
+                    --body-background-fill: #111111 !important;
+                    --background-fill-primary: #1a1a1a !important;
+                    --background-fill-secondary: #222222 !important;
+                    --block-background-fill: #1a1a1a !important;
+                    --color-text-primary: #ffffff !important;
+                    --color-text-secondary: #cccccc !important;
+                    color-scheme: dark !important;
+                }
+                body, .gradio-container {
+                    background-color: #111111 !important;
+                    color: #ffffff !important;
+                }
+                .block, .form, .panel {
+                    background-color: #1a1a1a !important;
+                }
+                /* Ensure markdown text is visible */
+                .markdown-text, .prose, .md, p, li, span {
+                    color: #e0e0e0 !important;
+                }
+                h1, h2, h3, h4, h5, h6 {
+                    color: #ffffff !important;
+                }
+                /* Fix label styling across browsers */
+                label, .label-wrap, .label-wrap span, .block-label, .block-label span {
+                    color: #5bc0de !important;
+                    background-color: transparent !important;
+                }
+                /* Input field styling */
+                input, textarea, .textbox {
+                    background-color: #2a2a2a !important;
+                    color: #ffffff !important;
+                    border-color: #444444 !important;
+                }
                 .big-button { font-size: 1.5em !important; }
                 .big-complete-button { 
                     font-size: 1.8em !important; 
@@ -1155,7 +1277,6 @@ def create_blocks():
                 }
                 footer { display: none !important; }
                 .gradio-container footer { display: none !important; }
-                .dark { --body-background-fill: #0b0f19 !important; }
             """
         )
     else:
@@ -1179,7 +1300,7 @@ with create_blocks() as demo:
         """)
         gr.Markdown("""
             <p style="
-                color: #28a745; 
+                color: #ffffff; 
                 font-size: 1.4em; 
                 font-weight: bold; 
                 text-align: center;
@@ -1192,15 +1313,17 @@ with create_blocks() as demo:
                 This will take <strong>5 quick photos</strong> of your face from different angles to set up your profile.
             </p> 
             
-            ---
+            <hr style="border-color: #444;">
             
-            ### How it works:
-            1. **Enter your first and last name** below
-            2. **Follow the on-screen prompts** - just move your head as instructed
-            3. **Hold still** when the border turns green
-            4. The camera will **automatically capture** after a 3-second countdown
+            <h3 style="color: #ffffff; margin-bottom: 10px;">How it works:</h3>
+            <ol style="color: #ffffff; font-size: 1.1em; line-height: 1.8;">
+                <li><strong style="color: #5bc0de;">Enter your first and last name</strong> below</li>
+                <li><strong style="color: #5bc0de;">Follow the on-screen prompts</strong> - just move your head as instructed</li>
+                <li><strong style="color: #5bc0de;">Hold still</strong> when the border turns green</li>
+                <li>The camera will <strong style="color: #5bc0de;">automatically capture</strong> after a 3-second countdown</li>
+            </ol>
             
-            ---
+            <hr style="border-color: #444;">
             """)
         
         with gr.Row():
@@ -1326,25 +1449,42 @@ with create_blocks() as demo:
     )
 
 
-def open_browser_fullscreen(url, delay=2.0):
-    """Open browser in fullscreen/kiosk mode after a delay."""
+def open_browser_fullscreen(url, delay=2.0, browser_pref="auto"):
+    """Open browser in fullscreen/kiosk mode after a delay.
+    
+    Args:
+        url: URL to open
+        delay: Seconds to wait before launching (for server startup)
+        browser_pref: Browser preference - "firefox", "chrome", "chromium", or "auto"
+    """
     import subprocess
     import shutil
     
     time.sleep(delay)  # Wait for server to start
     
-    # Try different browsers with fullscreen flags
-    browsers = [
-        # Chrome/Chromium with kiosk mode (true fullscreen)
-        ("firefox", ["--kiosk", url]),
-        ("google-chrome", ["--kiosk", "--no-first-run", url]),
-        ("chromium-browser", ["--kiosk", "--no-first-run", url]),
-        ("chromium", ["--kiosk", "--no-first-run", url]),
-        # Chrome with start-fullscreen (F11 style, can exit with F11)
-        ("google-chrome", ["--start-fullscreen", "--no-first-run", url]),
-        ("chromium-browser", ["--start-fullscreen", "--no-first-run", url]),
-        # Firefox fullscreen
-    ]
+    # Browser configurations
+    browser_configs = {
+        "firefox": [("firefox", ["--kiosk", url])],
+        "chrome": [
+            ("google-chrome", ["--kiosk", "--no-first-run", url]),
+            ("google-chrome", ["--start-fullscreen", "--no-first-run", url]),
+        ],
+        "chromium": [
+            ("chromium-browser", ["--kiosk", "--no-first-run", url]),
+            ("chromium", ["--kiosk", "--no-first-run", url]),
+            ("chromium-browser", ["--start-fullscreen", "--no-first-run", url]),
+        ],
+    }
+    
+    # Build browser list based on preference
+    if browser_pref == "auto":
+        browsers = (
+            browser_configs["firefox"] + 
+            browser_configs["chrome"] + 
+            browser_configs["chromium"]
+        )
+    else:
+        browsers = browser_configs.get(browser_pref, [])
     
     for browser, args in browsers:
         if shutil.which(browser):
@@ -1362,17 +1502,85 @@ def open_browser_fullscreen(url, delay=2.0):
 
 
 if __name__ == "__main__":
-    # Launch browser in fullscreen mode in background thread
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="QRyde Face Enrollment System",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--kiosk", "-k",
+        action="store_true",
+        help="Launch browser in kiosk/fullscreen mode"
+    )
+    parser.add_argument(
+        "--port", "-p",
+        type=int,
+        default=7861,
+        help="Port to run the server on (default: 7861)"
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--loglevel",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Logging level (default: INFO)"
+    )
+    parser.add_argument(
+        "--camera", "-c",
+        type=int,
+        default=0,
+        help="Camera index to use (default: 0)"
+    )
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Create a public Gradio share link"
+    )
+    parser.add_argument(
+        "--browser",
+        type=str,
+        choices=["firefox", "chrome", "chromium", "auto"],
+        default="auto",
+        help="Browser to use in kiosk mode (default: auto)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Set log level based on argument
+    log_level = getattr(logging, args.loglevel.upper())
+    logging.getLogger(__name__).setLevel(log_level)
+    logger.info(f"Log level set to {args.loglevel}")
+    
+    # Update camera index if specified
+    if args.camera != 0:
+        capture_system.camera_index = args.camera
+        logger.info(f"Using camera index: {args.camera}")
+    
     logger.info("Starting enrollment system")
-
-    url = "http://localhost:7861"
-    threading.Thread(target=open_browser_fullscreen, args=(url,), daemon=True).start()
+    
+    url = f"http://localhost:{args.port}"
+    
+    # Launch browser in kiosk mode if requested
+    if args.kiosk:
+        threading.Thread(
+            target=open_browser_fullscreen, 
+            args=(url, 2.0, args.browser), 
+            daemon=True
+        ).start()
+        logger.info(f"Launching in kiosk mode with browser preference: {args.browser}")
     
     demo.launch(
-        server_name="0.0.0.0",
-        server_port=7861,
-        share=False,
-        inbrowser=False  # We handle browser launch manually for fullscreen
+        server_name=args.host,
+        server_port=args.port,
+        share=args.share,
+        inbrowser=not args.kiosk  # Auto-open browser if not in kiosk mode
     )
 
     logger.info("Enrollment system started")

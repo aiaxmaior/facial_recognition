@@ -71,10 +71,476 @@ import threading
 import queue
 import logging
 import argparse
-import pickle
+import sqlite3
 import datetime
 import pandas as pd
 from typing import List, Optional, Dict, Tuple, Any
+
+
+# =============================================================================
+# SAFE DATABASE STORAGE (SQLite - no code execution risk unlike pickle)
+# =============================================================================
+
+def init_face_database(db_path: str) -> str:
+    """Initialize the SQLite database for face embeddings."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            model TEXT NOT NULL,
+            detector TEXT,
+            embedding BLOB NOT NULL,
+            embedding_normalized BLOB,
+            image_count INTEGER,
+            enrolled_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def save_face_to_db(db_path: str, name: str, model: str, embedding: np.ndarray, 
+                    image_count: int, detector: str = None) -> bool:
+    """Save a face embedding to the SQLite database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Convert numpy array to bytes
+    embedding_bytes = embedding.astype(np.float32).tobytes()
+    
+    # Normalize for cosine similarity
+    norm = np.linalg.norm(embedding)
+    normalized = embedding / norm if norm > 0 else embedding
+    normalized_bytes = normalized.astype(np.float32).tobytes()
+    
+    # Insert or replace (update if name exists)
+    cursor.execute("""
+        INSERT OR REPLACE INTO faces 
+        (name, model, detector, embedding, embedding_normalized, image_count, enrolled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        name,
+        model,
+        detector,
+        embedding_bytes,
+        normalized_bytes,
+        image_count,
+        datetime.datetime.now().isoformat()
+    ))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+
+def load_faces_from_db(db_path: str, model_filter: str = None) -> Dict[str, np.ndarray]:
+    """Load all face embeddings from the SQLite database."""
+    if not os.path.exists(db_path):
+        return {}
+    
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    if model_filter:
+        cursor.execute("SELECT name, embedding FROM faces WHERE model = ?", (model_filter,))
+    else:
+        cursor.execute("SELECT name, embedding FROM faces")
+    
+    faces = {}
+    for row in cursor.fetchall():
+        embedding = np.frombuffer(row['embedding'], dtype=np.float32)
+        faces[row['name']] = embedding
+    
+    conn.close()
+    return faces
+
+
+def list_faces_from_db(db_path: str) -> List[Dict]:
+    """List all enrolled faces with metadata from SQLite database."""
+    if not os.path.exists(db_path):
+        return []
+    
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, model, detector, image_count, enrolled_at FROM faces")
+    
+    faces = []
+    for row in cursor.fetchall():
+        faces.append({
+            'name': row['name'],
+            'model': row['model'],
+            'detector': row['detector'],
+            'image_count': row['image_count'],
+            'enrolled_at': row['enrolled_at'],
+            'file': 'faces.db'
+        })
+    
+    conn.close()
+    return faces
+
+
+def delete_face_from_db(db_path: str, name: str) -> bool:
+    """Delete a face from the SQLite database."""
+    if not os.path.exists(db_path):
+        return False
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM faces WHERE name = ?", (name,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# =============================================================================
+# EVENT LOGGING SYSTEM
+# =============================================================================
+
+class EventLogger:
+    """
+    SQLite-based event logging for facial recognition system.
+    Logs recognition events, system events, and provides query interface.
+    
+    Event Types:
+        - RECOGNITION: Successful face match
+        - UNKNOWN: Face detected but not in database
+        - NO_FACE: No face detected in frame
+        - SYSTEM: System events (start, stop, errors)
+        - ERROR: Error events
+    """
+    
+    # Event type constants
+    RECOGNITION = "RECOGNITION"
+    UNKNOWN = "UNKNOWN"
+    NO_FACE = "NO_FACE"
+    SYSTEM = "SYSTEM"
+    ERROR = "ERROR"
+    
+    def __init__(self, db_path: str = None, db_folder: str = "enrolled_faces"):
+        """
+        Initialize the event logger.
+        
+        Args:
+            db_path: Full path to events database, or None to auto-generate
+            db_folder: Folder for database if db_path is None
+        """
+        if db_path:
+            self.db_path = db_path
+        else:
+            os.makedirs(db_folder, exist_ok=True)
+            self.db_path = os.path.join(db_folder, "events.db")
+        
+        self._init_database()
+        self._log_buffer = []
+        self._buffer_lock = threading.Lock()
+        self._buffer_size = 10  # Batch write every N events
+        self._last_flush = time.time()
+        self._flush_interval = 5.0  # Force flush every N seconds
+    
+    def _init_database(self):
+        """Create the events table if it doesn't exist."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                name TEXT,
+                confidence REAL,
+                distance REAL,
+                is_match INTEGER,
+                camera_id TEXT,
+                source TEXT,
+                metadata TEXT,
+                frame_id INTEGER
+            )
+        """)
+        # Create indexes for common queries
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_type ON events(event_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_name ON events(name)")
+        conn.commit()
+        conn.close()
+    
+    def log(self, event_type: str, name: str = None, distance: float = None,
+            is_match: bool = None, camera_id: str = "default", source: str = "live_stream",
+            metadata: str = None, frame_id: int = None, flush: bool = False):
+        """
+        Log a recognition or system event.
+        
+        Args:
+            event_type: Type of event (RECOGNITION, UNKNOWN, NO_FACE, SYSTEM, ERROR)
+            name: Name of matched person (if applicable)
+            distance: Cosine distance score
+            is_match: Whether it was a positive match
+            camera_id: Camera identifier
+            source: Source of event (live_stream, file, rtsp, etc.)
+            metadata: Additional JSON metadata
+            frame_id: Frame number in video
+            flush: Force immediate database write
+        """
+        event = {
+            'timestamp': datetime.datetime.now().isoformat(),
+            'event_type': event_type,
+            'name': name,
+            'confidence': 1 - distance if distance is not None else None,
+            'distance': distance,
+            'is_match': 1 if is_match else 0 if is_match is not None else None,
+            'camera_id': camera_id,
+            'source': source,
+            'metadata': metadata,
+            'frame_id': frame_id
+        }
+        
+        with self._buffer_lock:
+            self._log_buffer.append(event)
+            
+            # Check if we should flush
+            should_flush = (
+                flush or
+                len(self._log_buffer) >= self._buffer_size or
+                time.time() - self._last_flush >= self._flush_interval
+            )
+            
+            if should_flush:
+                self._flush_buffer()
+    
+    def _flush_buffer(self):
+        """Write buffered events to database."""
+        if not self._log_buffer:
+            return
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        for event in self._log_buffer:
+            cursor.execute("""
+                INSERT INTO events 
+                (timestamp, event_type, name, confidence, distance, is_match, 
+                 camera_id, source, metadata, frame_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                event['timestamp'],
+                event['event_type'],
+                event['name'],
+                event['confidence'],
+                event['distance'],
+                event['is_match'],
+                event['camera_id'],
+                event['source'],
+                event['metadata'],
+                event['frame_id']
+            ))
+        
+        conn.commit()
+        conn.close()
+        
+        self._log_buffer.clear()
+        self._last_flush = time.time()
+    
+    def log_recognition(self, name: str, distance: float, is_match: bool, **kwargs):
+        """Convenience method for logging a recognition event."""
+        event_type = self.RECOGNITION if is_match else self.UNKNOWN
+        self.log(event_type, name=name, distance=distance, is_match=is_match, **kwargs)
+    
+    def log_no_face(self, **kwargs):
+        """Log a no-face-detected event."""
+        self.log(self.NO_FACE, **kwargs)
+    
+    def log_system(self, message: str, **kwargs):
+        """Log a system event."""
+        self.log(self.SYSTEM, metadata=message, **kwargs)
+    
+    def log_error(self, error: str, **kwargs):
+        """Log an error event."""
+        self.log(self.ERROR, metadata=error, **kwargs)
+    
+    def flush(self):
+        """Force flush any buffered events to database."""
+        with self._buffer_lock:
+            self._flush_buffer()
+    
+    def query(self, sql: str = None, params: tuple = (), limit: int = 100) -> List[Dict]:
+        """
+        Query the events database.
+        
+        Args:
+            sql: Custom SQL query (SELECT only) or None for default recent events
+            params: Query parameters
+            limit: Maximum number of results
+            
+        Returns:
+            List of event dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if sql:
+            if not sql.strip().upper().startswith("SELECT"):
+                raise ValueError("Only SELECT queries allowed")
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(
+                "SELECT * FROM events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            )
+        
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+    
+    def get_recent_events(self, limit: int = 100, event_type: str = None) -> List[Dict]:
+        """Get recent events, optionally filtered by type."""
+        self.flush()  # Ensure buffer is written
+        
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if event_type:
+            cursor.execute(
+                "SELECT * FROM events WHERE event_type = ? ORDER BY timestamp DESC LIMIT ?",
+                (event_type, limit)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            )
+        
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+    
+    def get_recognitions(self, name: str = None, since: str = None, limit: int = 100) -> List[Dict]:
+        """Get recognition events, optionally filtered by name and time."""
+        self.flush()
+        
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        query = "SELECT * FROM events WHERE event_type = ?"
+        params = [self.RECOGNITION]
+        
+        if name:
+            query += " AND name = ?"
+            params.append(name)
+        
+        if since:
+            query += " AND timestamp >= ?"
+            params.append(since)
+        
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return results
+    
+    def get_stats(self, since: str = None) -> Dict:
+        """Get event statistics."""
+        self.flush()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        where_clause = ""
+        params = []
+        if since:
+            where_clause = "WHERE timestamp >= ?"
+            params = [since]
+        
+        stats = {}
+        
+        # Total events by type
+        cursor.execute(f"""
+            SELECT event_type, COUNT(*) as count 
+            FROM events {where_clause}
+            GROUP BY event_type
+        """, params)
+        stats['by_type'] = dict(cursor.fetchall())
+        
+        # Total recognitions by person
+        cursor.execute(f"""
+            SELECT name, COUNT(*) as count 
+            FROM events 
+            WHERE event_type = 'RECOGNITION' {' AND timestamp >= ?' if since else ''}
+            GROUP BY name
+            ORDER BY count DESC
+            LIMIT 20
+        """, params)
+        stats['by_person'] = dict(cursor.fetchall())
+        
+        # Total events
+        cursor.execute(f"SELECT COUNT(*) FROM events {where_clause}", params)
+        stats['total_events'] = cursor.fetchone()[0]
+        
+        # Time range
+        cursor.execute("SELECT MIN(timestamp), MAX(timestamp) FROM events")
+        row = cursor.fetchone()
+        stats['first_event'] = row[0]
+        stats['last_event'] = row[1]
+        
+        conn.close()
+        return stats
+    
+    def export_csv(self, output_path: str, since: str = None, event_type: str = None) -> int:
+        """Export events to CSV file."""
+        self.flush()
+        
+        conn = sqlite3.connect(self.db_path)
+        
+        query = "SELECT * FROM events WHERE 1=1"
+        params = []
+        
+        if since:
+            query += " AND timestamp >= ?"
+            params.append(since)
+        
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        
+        query += " ORDER BY timestamp"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        df.to_csv(output_path, index=False)
+        return len(df)
+    
+    def clear_old_events(self, days: int = 30) -> int:
+        """Delete events older than specified days."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+        cursor.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+        deleted = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        return deleted
+
+
+# Global event logger instance
+_event_logger = None
+
+def get_event_logger(db_folder: str = "enrolled_faces") -> EventLogger:
+    """Get or create the global event logger instance."""
+    global _event_logger
+    if _event_logger is None:
+        _event_logger = EventLogger(db_folder=db_folder)
+    return _event_logger
+
 
 # Conditional imports for optional features
 try:
@@ -216,23 +682,22 @@ class FaceAuthSystem:
         # Create 'Master' Vector (Centroid)
         master_vector = np.mean(embeddings, axis=0)
         
-        # Save
-        save_path = os.path.join(self.db_folder, f"{name}_deepface.pkl")
-        data = {
-            "name": name,
-            "model": self.model_name,
-            "embedding": master_vector,
-            "enrolled_at": datetime.datetime.now().isoformat(),
-            "image_count": processed_count
-        }
-        
-        with open(save_path, "wb") as f:
-            pickle.dump(data, f)
+        # Save to SQLite database (safe - no code execution risk)
+        db_path = os.path.join(self.db_folder, "faces.db")
+        init_face_database(db_path)
+        save_face_to_db(
+            db_path=db_path,
+            name=name,
+            model=self.model_name,
+            embedding=master_vector,
+            image_count=processed_count,
+            detector=self.detector
+        )
         
         # Invalidate cache
         self._database_cache = None
         
-        logger.info(f"✅ Success: Saved {name} to {save_path}")
+        logger.info(f"✅ Success: Saved {name} to {db_path}")
         return master_vector
 
     def enroll_from_frames(self, name: str, frames: List[np.ndarray]) -> Optional[np.ndarray]:
@@ -274,17 +739,17 @@ class FaceAuthSystem:
 
         master_vector = np.mean(embeddings, axis=0)
         
-        save_path = os.path.join(self.db_folder, f"{name}_deepface.pkl")
-        data = {
-            "name": name,
-            "model": self.model_name,
-            "embedding": master_vector,
-            "enrolled_at": datetime.datetime.now().isoformat(),
-            "image_count": len(embeddings)
-        }
-        
-        with open(save_path, "wb") as f:
-            pickle.dump(data, f)
+        # Save to SQLite database (safe - no code execution risk)
+        db_path = os.path.join(self.db_folder, "faces.db")
+        init_face_database(db_path)
+        save_face_to_db(
+            db_path=db_path,
+            name=name,
+            model=self.model_name,
+            embedding=master_vector,
+            image_count=len(embeddings),
+            detector=self.detector
+        )
         
         self._database_cache = None
         logger.info(f"✅ Success: Enrolled {name}")
@@ -307,17 +772,29 @@ class FaceAuthSystem:
         db = {}
         if not os.path.exists(self.db_folder):
             return db
-            
+        
+        # Primary: Load from SQLite database (safe format)
+        db_path = os.path.join(self.db_folder, "faces.db")
+        if os.path.exists(db_path):
+            db = load_faces_from_db(db_path, model_filter=self.model_name)
+            logger.debug(f"Loaded {len(db)} faces from SQLite database")
+        
+        # Backward compatibility: Also check for legacy pkl files
+        # (These are kept for migration purposes but new enrollments use SQLite)
+        import pickle  # Only import if needed for legacy files
         for fname in os.listdir(self.db_folder):
             if fname.endswith("_deepface.pkl"):
+                # Skip if already loaded from SQLite
                 path = os.path.join(self.db_folder, fname)
                 try:
                     with open(path, "rb") as f:
                         data = pickle.load(f)
-                        if data.get("model") == self.model_name:
-                            db[data["name"]] = data["embedding"]
+                        name = data.get("name")
+                        if name and name not in db and data.get("model") == self.model_name:
+                            db[name] = data["embedding"]
+                            logger.debug(f"Loaded legacy pkl: {fname}")
                 except Exception as e:
-                    logger.error(f"Error loading {fname}: {e}")
+                    logger.warning(f"Error loading legacy {fname}: {e}")
         
         self._database_cache = db
         self._cache_timestamp = datetime.datetime.now()
@@ -498,20 +975,30 @@ class FaceAuthSystem:
         enrolled = []
         if not os.path.exists(self.db_folder):
             return enrolled
-            
+        
+        # Primary: List from SQLite database
+        db_path = os.path.join(self.db_folder, "faces.db")
+        if os.path.exists(db_path):
+            enrolled.extend(list_faces_from_db(db_path))
+        
+        # Backward compatibility: Also check for legacy pkl files
+        import pickle
+        seen_names = {e['name'] for e in enrolled}
         for fname in os.listdir(self.db_folder):
             if fname.endswith("_deepface.pkl"):
                 path = os.path.join(self.db_folder, fname)
                 try:
                     with open(path, "rb") as f:
                         data = pickle.load(f)
-                        enrolled.append({
-                            "name": data.get("name", "Unknown"),
-                            "model": data.get("model", "Unknown"),
-                            "enrolled_at": data.get("enrolled_at", "Unknown"),
-                            "image_count": data.get("image_count", 0),
-                            "file": fname
-                        })
+                        name = data.get("name", "Unknown")
+                        if name not in seen_names:
+                            enrolled.append({
+                                "name": name,
+                                "model": data.get("model", "Unknown"),
+                                "enrolled_at": data.get("enrolled_at", "Unknown"),
+                                "image_count": data.get("image_count", 0),
+                                "file": fname + " (legacy)"
+                            })
                 except Exception as e:
                     logger.error(f"Error reading {fname}: {e}")
         return enrolled
@@ -519,12 +1006,22 @@ class FaceAuthSystem:
     def delete_enrolled(self, name: str) -> bool:
         """Delete an enrolled face."""
         name = name.strip().replace(" ", "_")
-        path = os.path.join(self.db_folder, f"{name}_deepface.pkl")
-        if os.path.exists(path):
-            os.remove(path)
+        deleted = False
+        
+        # Try to delete from SQLite database first
+        db_path = os.path.join(self.db_folder, "faces.db")
+        if os.path.exists(db_path):
+            deleted = delete_face_from_db(db_path, name)
+        
+        # Also try to delete legacy pkl file
+        pkl_path = os.path.join(self.db_folder, f"{name}_deepface.pkl")
+        if os.path.exists(pkl_path):
+            os.remove(pkl_path)
+            deleted = True
+        
+        if deleted:
             self._database_cache = None
-            return True
-        return False
+        return deleted
 
 
 class DatabaseManager:
@@ -1382,11 +1879,15 @@ class LiveStreamRecognizer:
     """
     Continuous live stream face recognition using pkl embedding database.
     Much faster than DeepFace.stream() because it uses pre-computed embeddings.
+    
+    Features event logging to SQLite for recognition tracking and analytics.
     """
     
-    def __init__(self, face_system: FaceAuthSystem, camera_index: int = 0):
+    def __init__(self, face_system: FaceAuthSystem, camera_index: int = 0, 
+                 enable_logging: bool = True, camera_id: str = None):
         self.face_system = face_system
         self.camera_index = camera_index
+        self.camera_id = camera_id or f"cam_{camera_index}"
         self.cap = None
         self.running = False
         self.current_frame = None
@@ -1394,6 +1895,14 @@ class LiveStreamRecognizer:
         self.frame_lock = threading.Lock()
         self.last_recognition_time = 0
         self.recognition_interval = 0.5  # Recognize every 0.5 seconds
+        
+        # Event logging
+        self.enable_logging = enable_logging
+        self.event_logger = get_event_logger(face_system.db_folder) if enable_logging else None
+        self.frame_count = 0
+        self.last_logged_name = None  # Avoid duplicate logs for same person
+        self.last_logged_time = 0
+        self.log_debounce = 2.0  # Don't log same person within N seconds
         
     def start(self):
         """Start the live stream."""
@@ -1406,11 +1915,25 @@ class LiveStreamRecognizer:
         self.cap.set(cv2.CAP_PROP_FPS, 24)
         
         if not self.cap.isOpened():
+            if self.event_logger:
+                self.event_logger.log_error(
+                    f"Failed to open camera {self.camera_index}",
+                    camera_id=self.camera_id
+                )
             return "❌ Failed to open camera"
         
         self.running = True
+        self.frame_count = 0
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
+        
+        if self.event_logger:
+            self.event_logger.log_system(
+                f"Live stream started on camera {self.camera_index}",
+                camera_id=self.camera_id,
+                flush=True
+            )
+        
         return "✅ Live stream started"
     
     def stop(self):
@@ -1418,6 +1941,14 @@ class LiveStreamRecognizer:
         self.running = False
         if self.cap:
             self.cap.release()
+        
+        if self.event_logger:
+            self.event_logger.log_system(
+                f"Live stream stopped. Total frames: {self.frame_count}",
+                camera_id=self.camera_id,
+                flush=True
+            )
+        
         return "Stream stopped"
     
     def _capture_loop(self):
@@ -1427,6 +1958,7 @@ class LiveStreamRecognizer:
             if not ret:
                 continue
             
+            self.frame_count += 1
             frame = cv2.flip(frame, 1)  # Mirror
             display_frame = frame.copy()
             
@@ -1438,8 +1970,15 @@ class LiveStreamRecognizer:
                 try:
                     name, distance, is_match = self.face_system.match_from_frame(frame)
                     self.current_result = {"name": name, "distance": distance, "is_match": is_match}
+                    
+                    # Event logging with debounce
+                    if self.event_logger:
+                        self._log_recognition_event(name, distance, is_match, current_time)
+                        
                 except Exception as e:
                     self.current_result = {"name": "Error", "distance": 0, "is_match": False}
+                    if self.event_logger:
+                        self.event_logger.log_error(str(e), camera_id=self.camera_id)
             
             # Draw result on frame
             result = self.current_result
@@ -1467,6 +2006,30 @@ class LiveStreamRecognizer:
             
             time.sleep(0.033)  # ~30 FPS display
     
+    def _log_recognition_event(self, name: str, distance: float, is_match: bool, current_time: float):
+        """Log recognition event with debounce to avoid flooding the database."""
+        # Skip "No Face" and "Error" events (too noisy)
+        if name in ("No Face", "Error"):
+            return
+        
+        # Debounce: don't log same person repeatedly
+        if name == self.last_logged_name:
+            if current_time - self.last_logged_time < self.log_debounce:
+                return
+        
+        # Log the event
+        self.event_logger.log_recognition(
+            name=name,
+            distance=distance,
+            is_match=is_match,
+            camera_id=self.camera_id,
+            source="live_stream",
+            frame_id=self.frame_count
+        )
+        
+        self.last_logged_name = name
+        self.last_logged_time = current_time
+    
     def get_frame(self):
         """Get current frame for Gradio display."""
         with self.frame_lock:
@@ -1475,6 +2038,18 @@ class LiveStreamRecognizer:
                 status = f"{result['name']} | Distance: {result['distance']:.4f} | Match: {result['is_match']}"
                 return self.current_frame, status
         return None, "Waiting for camera..."
+    
+    def get_recent_events(self, limit: int = 20) -> List[Dict]:
+        """Get recent recognition events from the log."""
+        if self.event_logger:
+            return self.event_logger.get_recent_events(limit=limit)
+        return []
+    
+    def get_event_stats(self) -> Dict:
+        """Get event statistics."""
+        if self.event_logger:
+            return self.event_logger.get_stats()
+        return {}
 
 
 # =============================================================================
