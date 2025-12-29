@@ -11,14 +11,25 @@ import numpy as np
 import time
 import os
 
-# Configure logging
+# Configure logging - single configuration point
+# Root logger at INFO, our module at DEBUG to reduce noise from other libraries
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO,  # Default INFO for all libraries
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    force=True  # Override any existing configuration
 )
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Only our module at DEBUG level
+
+# Ensure output is not buffered
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
+
+logger.info("=== Facial Enrollment Logger Initialized (DEBUG level) ===")
 
 # Disable Gradio analytics/telemetry before importing
+
 os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 import gradio as gr
@@ -73,7 +84,7 @@ POSE_HOLD_TIME = 0.5  # How long to hold pose before countdown starts
 # WIDE TOLERANCES for easier capture
 CAPTURE_TARGETS = [
     {"name": "Front", "yaw_range": (-25, 25), "pitch_range": (-20, 20), 
-     "icon": "Front", "instruction": "Look straight at the camera", "audio": None},
+     "icon": "Front", "instruction": "Look straight at the camera", "audio": "look_forward.mp3"},
     {"name": "Left", "yaw_range": (10, 50), "pitch_range": (-30, 30), 
      "icon": "Left", "instruction": "Turn your head LEFT", "audio": "turn_left.mp3"},
     {"name": "Right", "yaw_range": (-50, -10), "pitch_range": (-30, 30), 
@@ -84,8 +95,24 @@ CAPTURE_TARGETS = [
      "icon": "Down", "instruction": "Tilt your chin DOWN slightly", "audio": "look_down.mp3"},
 ]
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Secondary guidance audio files - for re-orientation corrections
+# These are played when user needs to adjust position during capture
+SECONDARY_AUDIO = {
+    # Yaw corrections
+    "left_exceeded": "guidance_left_exceeded.mp3",      # "Too far left, come back right"
+    "left_more": "guidance_left_more.mp3",              # "Turn more to your left"
+    "right_exceeded": "guidance_right_exceeded.mp3",    # "Too far right, come back left"
+    "right_more": "guidance_right_more.mp3",            # "Turn more to your right"
+    # Pitch corrections  
+    "up_exceeded": "guidance_up_exceeded.mp3",          # "Too far up, lower chin"
+    "up_more": "guidance_up_more.mp3",                  # "Tilt chin up more"
+    "down_exceeded": "guidance_down_exceeded.mp3",      # "Too far down, raise chin"
+    "down_more": "guidance_down_more.mp3",              # "Tilt chin down more"
+    # Secondary axis corrections
+    "level_chin": "guidance_level_chin.mp3",            # "Good turn, now level your chin"
+    "face_forward": "guidance_face_forward.mp3",        # "Good tilt, now face forward"
+}
+
 
 class AudioPlayer:
     """
@@ -106,6 +133,7 @@ class AudioPlayer:
     
     def _preload_sounds(self):
         """Pre-load all audio files into memory."""
+        # Primary audio files
         audio_files = [
             "beep.mp3",
             "capture_complete.mp3",
@@ -116,13 +144,21 @@ class AudioPlayer:
             "turn_right.mp3",
         ]
         
+        # Add secondary guidance audio files
+        audio_files.extend(SECONDARY_AUDIO.values())
+        
         for filename in audio_files:
             filepath = os.path.join(self.audio_dir, filename)
             if os.path.exists(filepath):
                 try:
                     self.sounds[filename] = pygame.mixer.Sound(filepath)
+                    logger.debug(f"Loaded audio: {filename}")
                 except Exception as e:
-                    print(f"⚠️ Could not load {filename}: {e}")
+                    logger.warning(f"Could not load {filename}: {e}")
+            else:
+                # Only warn for secondary files (they may not exist yet)
+                if filename in SECONDARY_AUDIO.values():
+                    logger.debug(f"Secondary audio not found (optional): {filename}")
     
     def play(self, filename, force=False):
         """
@@ -252,7 +288,7 @@ class GuidedEnrollmentCapture:
         # Advisory audio state (rate-limited guidance)
         self.last_advisory_audio_time = 0      # Timestamp of last advisory audio
         self.advisory_audio_count = 0          # Count of audio prompts this capture
-        self.advisory_audio_interval = 2.0     # Seconds between audio prompts
+        self.advisory_audio_interval = 4.0     # Seconds between audio prompts
         self.advisory_audio_max = 5            # Max prompts per capture (10 seconds total)
         
         # Stability tracking for countdown trigger
@@ -526,12 +562,20 @@ class GuidedEnrollmentCapture:
             self.hold_audio_played = False  # Reset hold audio for new step
             self.last_countdown_beep = -1  # Reset countdown beeps
             
-            # Play the direction audio for this step
+            # Play the INITIAL direction audio for this step (force=True to bypass rate limit)
             if target.get("audio"):
-                audio_player.play(target["audio"])
+                audio_player.play(target["audio"], force=True)
+                logger.info(f"🔊 INITIAL audio: {target['audio']} for step {self.current_step + 1} ({target['name']})")
             elif self.current_step == 0:
                 # For "Front" - play a beep to indicate start
                 audio_player.play_beep()
+                logger.info(f"🔊 INITIAL beep for step 1 (Front)")
+            
+            # Set initial 2-second buffer before secondary guidance can start
+            # (by pretending some time already passed, first guidance can play after 2 real seconds)
+            initial_buffer = 2.0  # Seconds to wait after initial audio
+            self.last_advisory_audio_time = time.time() - (self.advisory_audio_interval - initial_buffer)
+            self.advisory_audio_count = 0  # Reset guidance count for new step
         
         # Progress bar at top
         progress_width = int((self.current_step / len(CAPTURE_TARGETS)) * w)
@@ -677,7 +721,7 @@ class GuidedEnrollmentCapture:
         pitch_ok = not pitch_low and not pitch_high
         
         hints = []
-        audio_hint = None  # For rate-limited audio
+        audio_hint = None  # For rate-limited secondary audio
         
         # Context-specific guidance based on target
         if target_name == "Left":
@@ -685,79 +729,95 @@ class GuidedEnrollmentCapture:
             if yaw_ok:
                 if not pitch_ok:
                     hints.append("Good turn! Level your chin")
+                    audio_hint = SECONDARY_AUDIO.get("level_chin")
             else:
                 if yaw_high:  # Too far left (>50)
                     hints.append("Too far! Come back RIGHT")
-                    audio_hint = "turn_right.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("left_exceeded") or "turn_right.mp3"
                 else:  # Not far enough (<10)
                     deviation = yaw_min - yaw
                     if deviation > 15:
                         hints.append("Keep turning LEFT")
                     else:
                         hints.append("Almost! A bit more LEFT")
-                    audio_hint = "turn_left.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("left_more") or "turn_left.mp3"
                     
         elif target_name == "Right":
             # Primary axis is yaw (need negative yaw -50 to -10)
             if yaw_ok:
                 if not pitch_ok:
                     hints.append("Good turn! Level your chin")
+                    audio_hint = SECONDARY_AUDIO.get("level_chin")
             else:
                 if yaw_low:  # Too far right (<-50)
                     hints.append("Too far! Come back LEFT")
-                    audio_hint = "turn_left.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("right_exceeded") or "turn_left.mp3"
                 else:  # Not far enough (>-10)
                     deviation = yaw - yaw_max
                     if deviation > 15:
                         hints.append("Keep turning RIGHT")
                     else:
                         hints.append("Almost! A bit more RIGHT")
-                    audio_hint = "turn_right.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("right_more") or "turn_right.mp3"
                     
         elif target_name == "Up":
             # Primary axis is pitch (need negative pitch -50 to -15)
             if pitch_ok:
                 if not yaw_ok:
                     hints.append("Good tilt! Face forward")
+                    audio_hint = SECONDARY_AUDIO.get("face_forward")
             else:
                 if pitch_low:  # Too far up (<-50)
                     hints.append("Too far! Lower chin slightly")
-                    audio_hint = "look_down.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("up_exceeded") or "look_down.mp3"
                 else:  # Not far enough (>-15)
                     deviation = pitch - pitch_max
                     if deviation > 15:
                         hints.append("Tilt chin UP more")
                     else:
                         hints.append("Almost! A bit more UP")
-                    audio_hint = "look_up.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("up_more") or "look_up.mp3"
                     
         elif target_name == "Down":
             # Primary axis is pitch (need positive pitch 15 to 50)
             if pitch_ok:
                 if not yaw_ok:
                     hints.append("Good tilt! Face forward")
+                    audio_hint = SECONDARY_AUDIO.get("face_forward")
             else:
                 if pitch_high:  # Too far down (>50)
                     hints.append("Too far! Raise chin slightly")
-                    audio_hint = "look_up.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("down_exceeded") or "look_up.mp3"
                 else:  # Not far enough (<15)
                     deviation = pitch_min - pitch
                     if deviation > 15:
                         hints.append("Tilt chin DOWN more")
                     else:
                         hints.append("Almost! A bit more DOWN")
-                    audio_hint = "look_down.mp3"
+                    audio_hint = SECONDARY_AUDIO.get("down_more") or "look_down.mp3"
                     
         else:
-            # Front or unknown - use simple guidance
-            if yaw_low:
+            # Front - use "exceeded" audio variants (they say "come back left/right" etc.)
+            if yaw_low:  # Looking too far right, need to turn left
                 hints.append("<-- Turn LEFT")
-            elif yaw_high:
+                audio_hint = SECONDARY_AUDIO.get("right_exceeded") or "turn_left.mp3"
+            elif yaw_high:  # Looking too far left, need to turn right
                 hints.append("Turn RIGHT -->")
-            if pitch_low:
-                hints.append("Look DOWN v")
-            elif pitch_high:
-                hints.append("Look UP ^")
+                audio_hint = SECONDARY_AUDIO.get("left_exceeded") or "turn_right.mp3"
+            # Pitch guidance (only if yaw is ok, to avoid conflicting audio)
+            if not audio_hint:
+                if pitch_low:  # Looking too far up, need to look down
+                    hints.append("Look DOWN v")
+                    audio_hint = SECONDARY_AUDIO.get("up_exceeded") or "look_down.mp3"
+                elif pitch_high:  # Looking too far down, need to look up
+                    hints.append("Look UP ^")
+                    audio_hint = SECONDARY_AUDIO.get("down_exceeded") or "look_up.mp3"
+            else:
+                # Still show pitch hints visually, just don't override audio
+                if pitch_low:
+                    hints.append("Look DOWN v")
+                elif pitch_high:
+                    hints.append("Look UP ^")
         
         # Display visual hints
         if hints:
@@ -767,14 +827,15 @@ class GuidedEnrollmentCapture:
             self._put_text_outlined(frame, hint_text, (text_x, h - 50),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 165, 255), 2)
         
-        # Rate-limited audio feedback
+        # Rate-limited audio feedback (2 second interval, max 5 per step)
         if audio_hint and self.advisory_audio_count < self.advisory_audio_max:
             current_time = time.time()
-            if current_time - self.last_advisory_audio_time >= self.advisory_audio_interval:
+            time_since_last = current_time - self.last_advisory_audio_time
+            if time_since_last >= self.advisory_audio_interval:
                 audio_player.play(audio_hint)
                 self.last_advisory_audio_time = current_time
                 self.advisory_audio_count += 1
-                logger.debug(f"Advisory audio {self.advisory_audio_count}/{self.advisory_audio_max}: {audio_hint}")
+                logger.info(f"🔊 GUIDANCE audio [{self.advisory_audio_count}/{self.advisory_audio_max}]: {audio_hint}")
 
     def _draw_checkmark(self, frame, cx, cy, size=10, color=(0, 255, 0), thickness=2):
         """Draw a checkmark at the specified position."""
@@ -1226,6 +1287,8 @@ def open_browser_fullscreen(url, delay=2.0):
 
 if __name__ == "__main__":
     # Launch browser in fullscreen mode in background thread
+    logger.info("Starting enrollment system")
+
     url = "http://localhost:7861"
     threading.Thread(target=open_browser_fullscreen, args=(url,), daemon=True).start()
     
@@ -1235,3 +1298,6 @@ if __name__ == "__main__":
         share=False,
         inbrowser=False  # We handle browser launch manually for fullscreen
     )
+
+    logger.info("Enrollment system started")
+    
