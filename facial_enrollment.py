@@ -267,6 +267,7 @@ class GuidedEnrollmentCapture:
         self.pose_held_since = 0
         self.last_pose_valid = False
         self.capture_complete = False
+        self.completion_time = 0  # Timestamp when capture completed (for auto-revert)
         
         # "Locked in" state - once countdown starts, we're more forgiving
         self.locked_yaw = 0
@@ -354,6 +355,7 @@ class GuidedEnrollmentCapture:
         self.pose_held_since = 0
         self.last_pose_valid = False
         self.capture_complete = False
+        self.completion_time = 0
         self.enrollment_result = ""
         
         # Reset audio state
@@ -896,6 +898,7 @@ class GuidedEnrollmentCapture:
         if self.current_step >= len(CAPTURE_TARGETS):
             logger.info("🎉 All captures complete! Starting enrollment...")
             self.capture_complete = True
+            self.completion_time = time.time()  # Record when completion happened
             # Trigger enrollment in background
             threading.Thread(target=self._process_enrollment, daemon=True).start()
 
@@ -1019,17 +1022,30 @@ WEBCAM_INDEX = 0  # Usually 0 for USB webcam, 2 for CSI on Jetson
 capture_system = GuidedEnrollmentCapture(camera_index=WEBCAM_INDEX)
 
 
-def start_enrollment(name):
+def start_enrollment(first_name, last_name):
     """Start the enrollment process."""
-    if not name or not name.strip():
+    first_name = (first_name or "").strip()
+    last_name = (last_name or "").strip()
+    
+    if not first_name:
         return (
             gr.update(visible=True),   # welcome screen stays
             gr.update(visible=False),  # camera screen hidden
-            "Please enter your name first!"
+            "⚠️ Please enter your first name!"
         )
     
+    if not last_name:
+        return (
+            gr.update(visible=True),   # welcome screen stays
+            gr.update(visible=False),  # camera screen hidden
+            "⚠️ Please enter your last name!"
+        )
+    
+    # Combine first and last name
+    full_name = f"{first_name} {last_name}"
+    
     capture_system.reset_capture()
-    capture_system.set_user_name(name)
+    capture_system.set_user_name(full_name)
     capture_system.start_camera()
     
     return (
@@ -1064,14 +1080,42 @@ def get_camera_feed():
     return frame, status, progress, thumbnails[0], thumbnails[1], thumbnails[2], thumbnails[3], thumbnails[4]
 
 
+AUTO_REVERT_SECONDS = 10  # Auto-revert to welcome screen after this many seconds
+
 def check_completion():
-    """Check if enrollment is complete. Returns (done_btn, completion_msg, msg_text)."""
+    """Check if enrollment is complete. Returns (done_btn, completion_msg, welcome_screen, camera_screen, error_msg)."""
     if capture_system.capture_complete and capture_system.enrollment_result:
+        # Check if auto-revert timer has elapsed
+        elapsed = time.time() - capture_system.completion_time
+        if elapsed >= AUTO_REVERT_SECONDS:
+            # Auto-revert to welcome screen
+            logger.info(f"⏱️ Auto-reverting to welcome screen after {AUTO_REVERT_SECONDS}s")
+            capture_system.stop_camera()
+            capture_system.reset_capture()
+            return (
+                gr.update(visible=False),  # Hide done button
+                gr.update(visible=False, value=""),  # Hide message
+                gr.update(visible=True),   # Show welcome screen
+                gr.update(visible=False),  # Hide camera screen
+                ""  # Clear error message
+            )
+        
+        # Show remaining time in button
+        remaining = int(AUTO_REVERT_SECONDS - elapsed)
         return (
-            gr.update(visible=True),   # Show done button
-            gr.update(visible=True, value=capture_system.enrollment_result)  # Show message
+            gr.update(visible=True, value=f"✅ Complete Enrollment ({remaining}s)"),  # Show done button with countdown
+            gr.update(visible=True, value=capture_system.enrollment_result),  # Show message
+            gr.update(),  # No change to welcome screen
+            gr.update(),  # No change to camera screen
+            gr.update()   # No change to error message
         )
-    return gr.update(visible=False), gr.update(visible=False, value="")
+    return (
+        gr.update(visible=False), 
+        gr.update(visible=False, value=""),
+        gr.update(),  # No change to welcome screen
+        gr.update(),  # No change to camera screen
+        gr.update()   # No change to error message
+    )
 
 
 # ============================================================================
@@ -1097,6 +1141,18 @@ def create_blocks():
             ),
             css="""
                 .big-button { font-size: 1.5em !important; }
+                .big-complete-button { 
+                    font-size: 1.8em !important; 
+                    padding: 20px 40px !important;
+                    min-width: 300px !important;
+                    background: linear-gradient(135deg, #28a745 0%, #20c997 100%) !important;
+                    border: none !important;
+                    box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4) !important;
+                }
+                .big-complete-button:hover {
+                    transform: scale(1.05) !important;
+                    box-shadow: 0 6px 20px rgba(40, 167, 69, 0.6) !important;
+                }
                 footer { display: none !important; }
                 .gradio-container footer { display: none !important; }
                 .dark { --body-background-fill: #0b0f19 !important; }
@@ -1139,7 +1195,7 @@ with create_blocks() as demo:
             ---
             
             ### How it works:
-            1. **Enter your name** below
+            1. **Enter your first and last name** below
             2. **Follow the on-screen prompts** - just move your head as instructed
             3. **Hold still** when the border turns green
             4. The camera will **automatically capture** after a 3-second countdown
@@ -1147,12 +1203,19 @@ with create_blocks() as demo:
             ---
             """)
         
-        name_input = gr.Textbox(
-            label="Your Name",
-            placeholder="Enter your full name...",
-            scale=1,
-            elem_id="name-input"
-        )
+        with gr.Row():
+            first_name_input = gr.Textbox(
+                label="First Name",
+                placeholder="Enter your first name...",
+                scale=1,
+                elem_id="first-name-input"
+            )
+            last_name_input = gr.Textbox(
+                label="Last Name",
+                placeholder="Enter your last name...",
+                scale=1,
+                elem_id="last-name-input"
+            )
         
         error_msg = gr.Markdown("", elem_id="error-msg")
         
@@ -1176,7 +1239,13 @@ with create_blocks() as demo:
         
         with gr.Row():
             back_btn = gr.Button("← Back", size="sm", variant="secondary")
-            done_btn = gr.Button("✅ Complete", size="sm", variant="primary", visible=False)
+            done_btn = gr.Button(
+                "✅ Complete Enrollment", 
+                size="lg", 
+                variant="primary", 
+                visible=False,
+                elem_classes=["big-complete-button"]
+            )
             progress_display = gr.Markdown("0/5 photos", elem_classes=["status-box"])
         
         status_display = gr.Markdown(
@@ -1214,13 +1283,20 @@ with create_blocks() as demo:
     # Start button / Enter key
     start_btn.click(
         fn=start_enrollment,
-        inputs=[name_input],
+        inputs=[first_name_input, last_name_input],
         outputs=[welcome_screen, camera_screen, error_msg]
     )
     
-    name_input.submit(
+    # Allow Enter key on either name field to start
+    first_name_input.submit(
         fn=start_enrollment,
-        inputs=[name_input],
+        inputs=[first_name_input, last_name_input],
+        outputs=[welcome_screen, camera_screen, error_msg]
+    )
+    
+    last_name_input.submit(
+        fn=start_enrollment,
+        inputs=[first_name_input, last_name_input],
         outputs=[welcome_screen, camera_screen, error_msg]
     )
     
@@ -1243,10 +1319,10 @@ with create_blocks() as demo:
                  thumb_1, thumb_2, thumb_3, thumb_4, thumb_5]
     )
     
-    # Completion check timer
+    # Completion check timer (also handles auto-revert after 10 seconds)
     completion_timer.tick(
         fn=check_completion,
-        outputs=[done_btn, completion_msg]
+        outputs=[done_btn, completion_msg, welcome_screen, camera_screen, error_msg]
     )
 
 
@@ -1260,6 +1336,7 @@ def open_browser_fullscreen(url, delay=2.0):
     # Try different browsers with fullscreen flags
     browsers = [
         # Chrome/Chromium with kiosk mode (true fullscreen)
+        ("firefox", ["--kiosk", url]),
         ("google-chrome", ["--kiosk", "--no-first-run", url]),
         ("chromium-browser", ["--kiosk", "--no-first-run", url]),
         ("chromium", ["--kiosk", "--no-first-run", url]),
@@ -1267,7 +1344,6 @@ def open_browser_fullscreen(url, delay=2.0):
         ("google-chrome", ["--start-fullscreen", "--no-first-run", url]),
         ("chromium-browser", ["--start-fullscreen", "--no-first-run", url]),
         # Firefox fullscreen
-        ("firefox", ["--kiosk", url]),
     ]
     
     for browser, args in browsers:
