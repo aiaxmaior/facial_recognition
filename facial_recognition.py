@@ -614,7 +614,7 @@ class FaceAuthSystem:
         db_folder: str = "enrolled_faces", 
         model: str = "Facenet512",
         detector: str = "retinaface",
-        threshold: float = 0.30
+        threshold: float = 0.40
     ):
         """
         Initialize the Face Authentication System.
@@ -624,6 +624,8 @@ class FaceAuthSystem:
             model: Recognition model to use (default: Facenet512)
             detector: Face detector backend (default: retinaface)
             threshold: Cosine distance threshold for matching (lower = stricter)
+                       Default 0.40 is balanced for facial hair/appearance variations.
+                       Use 0.30 for stricter matching, 0.45 for more lenient.
         """
         self.db_folder = db_folder
         self.model_name = model
@@ -920,6 +922,62 @@ class FaceAuthSystem:
 
         is_match = best_score <= self.threshold
         return best_match, best_score, is_match
+
+    def analyze_distances(self, frame_or_path) -> List[Dict[str, Any]]:
+        """
+        Analyze distances to ALL enrolled faces for diagnostic purposes.
+        Useful for understanding why matches fail (especially with facial hair).
+        
+        Args:
+            frame_or_path: Either a BGR numpy array or path to an image
+            
+        Returns:
+            List of dicts with name, distance, would_match, sorted by distance
+        """
+        if not DEEPFACE_AVAILABLE or not SCIPY_AVAILABLE:
+            return [{"error": "Required libraries not available"}]
+        
+        database = self.load_database()
+        if not database:
+            return [{"error": "No enrolled faces"}]
+        
+        try:
+            if isinstance(frame_or_path, np.ndarray):
+                result = DeepFace.represent(
+                    img_path=frame_or_path,
+                    model_name=self.model_name,
+                    detector_backend=self.detector,
+                    enforce_detection=True,
+                    align=True
+                )
+            else:
+                result = DeepFace.represent(
+                    img_path=frame_or_path,
+                    model_name=self.model_name,
+                    detector_backend=self.detector,
+                    enforce_detection=True,
+                    align=True
+                )
+            target_vector = result[0]["embedding"]
+        except Exception as e:
+            return [{"error": f"Face detection failed: {e}"}]
+        
+        # Calculate distance to all enrolled faces
+        results = []
+        for name, db_vector in database.items():
+            distance = cosine(target_vector, db_vector)
+            margin = self.threshold - distance
+            results.append({
+                "name": name,
+                "distance": round(distance, 4),
+                "would_match": distance <= self.threshold,
+                "margin": round(margin, 4),
+                "threshold": self.threshold
+            })
+        
+        # Sort by distance (closest first)
+        results.sort(key=lambda x: x["distance"])
+        return results
 
     def verify_images(self, img1_path: str, img2_path: str) -> Dict[str, Any]:
         """
@@ -2017,6 +2075,11 @@ class LiveStreamRecognizer:
             if current_time - self.last_logged_time < self.log_debounce:
                 return
         
+        # Build metadata with threshold info for diagnostics
+        threshold = self.face_system.threshold
+        margin = threshold - distance  # Positive = match, negative = no match
+        metadata = f"threshold={threshold:.3f},margin={margin:.3f}"
+        
         # Log the event
         self.event_logger.log_recognition(
             name=name,
@@ -2024,8 +2087,13 @@ class LiveStreamRecognizer:
             is_match=is_match,
             camera_id=self.camera_id,
             source="live_stream",
-            frame_id=self.frame_count
+            frame_id=self.frame_count,
+            metadata=metadata
         )
+        
+        # Console log for near-miss debugging
+        if not is_match and distance < threshold + 0.15:
+            logger.info(f"Near-miss: {name} at distance {distance:.4f} (threshold: {threshold})")
         
         self.last_logged_name = name
         self.last_logged_time = current_time

@@ -38,7 +38,14 @@ import sqlite3
 import json
 from deepface import DeepFace
 
-
+global CAMERA_IP, PORT, STREAM, USER, PASSWORD, capture_system, WEBCAM_INDEX
+CAMERA_IP = None
+PORT = 554
+STREAM = "sub"
+USER = "admin"
+PASSWORD = "Fanatec2025"
+capture_system = None
+WEBCAM_INDEX = 0
 # ============================================================================
 # SAFE DATABASE STORAGE (SQLite - no code execution risk unlike pickle)
 # ============================================================================
@@ -311,8 +318,22 @@ audio_player = AudioPlayer()
 class GuidedEnrollmentCapture:
     """Handles camera capture with MediaPipe face mesh and auto-detection."""
     
-    def __init__(self, camera_index=0):
+    def __init__(self, camera_index=0, camera_ip=None, port = 554, stream = "sub", user = "admin", password = "Fanatec2025"):
         self.camera_index = camera_index
+        self.camera_ip = camera_ip
+        self.port = port
+        self.stream = stream
+        self.user = user
+        self.password = password
+        
+        # Construct RTSP URL from components if camera_ip is provided
+        if self.camera_ip:
+            if stream == "sub":
+                self.rtsp_url = f"rtsp://{self.user}:{self.password}@{self.camera_ip}/Preview_01_sub"
+            elif stream == "main":
+                self.rtsp_url = f"rtsp://{self.user}:{self.password}@{self.camera_ip}:{self.port}"
+        else:
+            self.rtsp_url = None
         self.cap = None
         self.running = False
         self.camera_ready = False
@@ -406,8 +427,10 @@ class GuidedEnrollmentCapture:
         
         # Initialize MediaPipe on first camera start (deferred for Jetson performance)
         self._init_mediapipe()
-        
-        self.cap = cv2.VideoCapture(self.camera_index)
+        if self.camera_ip:
+            self.cap = cv2.VideoCapture(self.rtsp_url)
+        else:
+            self.cap = cv2.VideoCapture(self.camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 60)
@@ -1106,7 +1129,15 @@ class GuidedEnrollmentCapture:
 # Global instance - use camera index 0 for USB webcam
 # Change this if your webcam is on a different index
 WEBCAM_INDEX = 0  # Usually 0 for USB webcam, 2 for CSI on Jetson
-capture_system = GuidedEnrollmentCapture(camera_index=WEBCAM_INDEX)
+
+# Global RTSP/camera connection parameters (can be overridden via command-line args)
+CAMERA_IP = None
+PORT = 554
+STREAM = "sub"
+USER = "admin"
+PASSWORD = "Fanatec2025"
+
+capture_system = GuidedEnrollmentCapture(camera_index=WEBCAM_INDEX, camera_ip=CAMERA_IP, port=PORT, stream=STREAM, user=USER, password=PASSWORD)
 
 
 def start_enrollment(first_name, last_name):
@@ -1539,6 +1570,36 @@ if __name__ == "__main__":
         help="Camera index to use (default: 0)"
     )
     parser.add_argument(
+        "--camera-ip",
+        type=str,
+        default=None,
+        help="Camera IP address for RTSP stream (default: None, uses local camera)"
+    )
+    parser.add_argument(
+        "--rtsp-port",
+        type=int,
+        default=554,
+        help="RTSP port for camera stream (default: 554)"
+    )
+    parser.add_argument(
+        "--rtsp-stream",
+        type=str,
+        default="sub",
+        help="RTSP stream name (default: sub)"
+    )
+    parser.add_argument(
+        "--rtsp-user",
+        type=str,
+        default="admin",
+        help="RTSP username (default: admin)"
+    )
+    parser.add_argument(
+        "--rtsp-password",
+        type=str,
+        default="Fanatec2025",
+        help="RTSP password (default: Fanatec2025)"
+    )
+    parser.add_argument(
         "--share",
         action="store_true",
         help="Create a public Gradio share link"
@@ -1558,12 +1619,33 @@ if __name__ == "__main__":
     logging.getLogger(__name__).setLevel(log_level)
     logger.info(f"Log level set to {args.loglevel}")
     
+    # Update global RTSP/camera parameters from args
+    CAMERA_IP = args.camera_ip
+    PORT = args.rtsp_port
+    STREAM = args.rtsp_stream
+    USER = args.rtsp_user
+    PASSWORD = args.rtsp_password
+    
     # Update camera index if specified
     if args.camera != 0:
-        capture_system.camera_index = args.camera
+        WEBCAM_INDEX = args.camera
         logger.info(f"Using camera index: {args.camera}")
     
+    # Recreate capture_system with updated parameters
+    capture_system = GuidedEnrollmentCapture(
+        camera_index=WEBCAM_INDEX, 
+        camera_ip=CAMERA_IP, 
+        port=PORT, 
+        stream=STREAM, 
+        user=USER, 
+        password=PASSWORD
+    )
+    logger.info(f"Camera system initialized: camera_ip={CAMERA_IP}, port={PORT}, stream={STREAM}, user={USER}")
+    if CAMERA_IP:
+        logger.info(f"RTSP URL: {capture_system.rtsp_url}")
+    
     logger.info("Starting enrollment system")
+
     
     url = f"http://localhost:{args.port}"
     
