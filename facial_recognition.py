@@ -612,8 +612,8 @@ class FaceAuthSystem:
     def __init__(
         self, 
         db_folder: str = "enrolled_faces", 
-        model: str = "Facenet512",
-        detector: str = "retinaface",
+        model: str = "ArcFace",
+        detector: str = "yolov8",
         threshold: float = 0.40
     ):
         """
@@ -621,8 +621,8 @@ class FaceAuthSystem:
         
         Args:
             db_folder: Directory to store enrolled face embeddings
-            model: Recognition model to use (default: Facenet512)
-            detector: Face detector backend (default: retinaface)
+            model: Recognition model to use (default: ArcFace)
+            detector: Face detector backend (default: yolov8)
             threshold: Cosine distance threshold for matching (lower = stricter)
                        Default 0.40 is balanced for facial hair/appearance variations.
                        Use 0.30 for stricter matching, 0.45 for more lenient.
@@ -637,6 +637,35 @@ class FaceAuthSystem:
         # Ensure DB folder exists
         os.makedirs(self.db_folder, exist_ok=True)
         logger.info(f"FaceAuthSystem initialized with model={model}, detector={detector}")
+
+    def warmup_model(self):
+        """
+        Pre-load the model by running a dummy inference.
+        This downloads the model if not cached and ensures faster first recognition.
+        """
+        if not DEEPFACE_AVAILABLE:
+            logger.warning("DeepFace not available, cannot warmup model")
+            return False
+
+        try:
+            logger.info(f"Warming up {self.model_name} model... (may download if not cached)")
+            # Create a small dummy image
+            dummy_img = np.zeros((112, 112, 3), dtype=np.uint8)
+            # Add a simple white rectangle to simulate a face
+            cv2.rectangle(dummy_img, (20, 20), (92, 92), (255, 255, 255), -1)
+
+            # Run inference to trigger model download/loading
+            DeepFace.represent(
+                img_path=dummy_img,
+                model_name=self.model_name,
+                detector_backend="skip",  # Skip detection for dummy image
+                enforce_detection=False
+            )
+            logger.info(f"✅ {self.model_name} model loaded and ready")
+            return True
+        except Exception as e:
+            logger.warning(f"Model warmup failed (will retry on first use): {e}")
+            return False
 
     def enroll(self, name: str, image_paths: List[str]) -> Optional[np.ndarray]:
         """
@@ -2105,7 +2134,12 @@ class LiveStreamRecognizer:
                 result = self.current_result
                 status = f"{result['name']} | Distance: {result['distance']:.4f} | Match: {result['is_match']}"
                 return self.current_frame, status
-        return None, "Waiting for camera..."
+
+        # Return a placeholder image instead of None to avoid green screen
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "Waiting for camera...", (150, 240),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        return placeholder, "Waiting for camera..."
     
     def get_recent_events(self, limit: int = 20) -> List[Dict]:
         """Get recent recognition events from the log."""
@@ -2538,7 +2572,7 @@ class GradioInterface:
     def launch(self, server_port: int = 7860, share: bool = False, theme=None):
         """
         Launch the Gradio interface.
-        
+
         Args:
             server_port: Port to run the server on
             share: Whether to create a public link
@@ -2546,7 +2580,11 @@ class GradioInterface:
         """
         if self.demo is None:
             self.build()
-        
+
+        # Pre-load the model to avoid delays on first recognition
+        logger.info("Pre-loading facial recognition model...")
+        self.system.warmup_model()
+
         self.demo.launch(
             server_port=server_port,
             share=share,
@@ -2588,16 +2626,16 @@ Examples:
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="Facenet512",
+        default="ArcFace",
         choices=FaceAuthSystem.SUPPORTED_MODELS,
-        help="Face recognition model (default: Facenet512)"
+        help="Face recognition model (default: ArcFace)"
     )
     parser.add_argument(
         "--detector", "-d",
         type=str,
-        default="retinaface",
+        default="yolov8",
         choices=FaceAuthSystem.SUPPORTED_DETECTORS,
-        help="Face detector backend (default: retinaface)"
+        help="Face detector backend (default: yolov8)"
     )
     parser.add_argument(
         "--db-folder",
