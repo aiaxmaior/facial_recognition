@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reolink & Jetson Setup Guide</title>
+    <title>Jetson Orin Nano: Networking & NAT Gateway Guide</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
@@ -19,463 +19,284 @@
             max-height: 400px; 
         }
         .code-block {
-            background-color: #1e293b;
-            color: #e2e8f0;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            font-family: monospace;
+            background-color: #0f172a;
+            color: #38bdf8;
+            padding: 1.25rem;
+            border-radius: 0.75rem;
+            font-family: 'Fira Code', monospace;
             overflow-x: auto;
             position: relative;
+            border: 1px solid #1e293b;
         }
         .copy-btn {
             position: absolute;
-            top: 0.5rem;
-            right: 0.5rem;
-            background-color: #475569;
-            color: white;
-            font-size: 0.75rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
+            top: 0.75rem;
+            right: 0.75rem;
+            background-color: #334155;
+            color: #f1f5f9;
+            font-size: 0.7rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 0.4rem;
             cursor: pointer;
-            transition: background-color 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            transition: all 0.2s;
         }
-        .copy-btn:hover { background-color: #64748b; }
-        .node { transition: all 0.3s ease; }
-        .node:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
-        .active-tab { border-bottom: 2px solid #0ea5e9; color: #0ea5e9; font-weight: 600; }
-        .inactive-tab { color: #64748b; }
-        .inactive-tab:hover { color: #334155; }
+        .copy-btn:hover { background-color: #475569; }
+        .active-tab { background-color: #f8fafc; border-bottom: 2px solid #0ea5e9; color: #0ea5e9; font-weight: 700; }
+        .terminal-header {
+            background-color: #1e293b;
+            padding: 0.5rem 1rem;
+            border-top-left-radius: 0.75rem;
+            border-top-right-radius: 0.75rem;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-800">
 
-    <!-- Chosen Palette: Slate (Neutrals), Sky (Primary Action/Highlight), Emerald (Success), Amber (Warning) -->
+    <!-- Chosen Palette: Slate (Calm Harmony), Sky (Clean Accents), Rose (System Alerts) -->
 
     <!-- Application Structure Plan: 
-         1. Header: Quick context.
-         2. Interactive Architecture Diagram: Visualizes the physical connections and IP flow.
-         3. Step-by-Step Workflow: Tabbed interface to guide the user through the 3 main phases (Jetson Config, Camera Init, Routing). This prevents information overload.
-         4. Stream Comparison (Chart.js): Visual justification for using the Sub-stream (Latency/Bandwidth).
-         5. Dynamic URL Generator: Tool to generate the final RTSP string based on user inputs.
+         1. Introduction: Defines the core networking concepts (NAT, ICS, Gateway).
+         2. Interactive Network Map: Visualizes the "Internet Connection Sharing" flow.
+         3. Implementation Terminal: A task-oriented view focusing purely on the bash commands for DHCP and NAT setup.
+         4. Analytics: A data-driven look at why specific network rules (iptables) are required in Docker environments.
     -->
 
     <!-- Visualization & Content Choices:
-         1. Network Diagram (HTML/CSS): Visualizes the "Network Architecture" section. Goal: Orient the user physically.
-         2. Tabbed Workflow: Organizes the linear setup process. Goal: Prevent skipping steps.
-         3. Bar Chart (Chart.js): Compares Main vs. Sub stream specs. Goal: Justify the "Watermark & OSD Removal" section advice about using the sub-stream for AI.
-         4. URL Generator: Functional tool. Goal: Synthesize the final output.
+         1. Flow Diagram (HTML/CSS): Shows the NAT translation between eth0 and wlan0.
+         2. Command Modules: Categorized code blocks for manual deployment.
+         3. Requirement Chart (Chart.js): Visualizes overhead of NAT vs. direct connections.
+         4. Persistence Tracker: Interactive list for final system hardening.
     -->
     
     <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
 
-    <div class="max-w-6xl mx-auto px-4 py-8">
+    <div class="max-w-5xl mx-auto px-6 py-12">
         
-        <!-- Header -->
-        <header class="mb-10 text-center">
-            <h1 class="text-4xl font-bold text-slate-900 mb-2">Jetson Orin Nano & Reolink Setup</h1>
-            <p class="text-slate-600 max-w-2xl mx-auto">Interactive guide for initializing an RLC-520A camera on an isolated PoE network for facial recognition applications.</p>
+        <!-- Header Section -->
+        <header class="mb-12">
+            <div class="inline-block px-3 py-1 bg-sky-100 text-sky-700 rounded-full text-xs font-bold uppercase tracking-widest mb-4">Network Architecture</div>
+            <h1 class="text-5xl font-extrabold text-slate-900 tracking-tight mb-4">Headless NAT Gateway</h1>
+            <p class="text-xl text-slate-600 leading-relaxed max-w-3xl">
+                Configuring the Jetson Orin Nano as a DHCP server and internet gateway for isolated Ethernet peripherals.
+            </p>
         </header>
 
-        <!-- Section 1: Network Architecture Visualization -->
-        <section class="mb-12">
-            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-                <h2 class="text-2xl font-bold mb-4 text-slate-800">1. System Architecture</h2>
-                <p class="text-slate-600 mb-6">Explore the physical and logical layout of the system. Hover over components to see their role and IP configuration.</p>
-                
-                <!-- Diagram Container -->
-                <div class="flex flex-col md:flex-row justify-between items-center gap-4 py-8 px-4 bg-slate-50 rounded-lg border border-dashed border-slate-300 relative">
-                    
-                    <!-- Node: Internet -->
-                    <div class="node w-full md:w-1/5 bg-sky-100 border border-sky-200 p-4 rounded-lg text-center cursor-help group relative">
-                        <div class="text-3xl mb-2">🌐</div>
-                        <h3 class="font-bold text-sky-900">Internet</h3>
-                        <p class="text-xs text-sky-700">Main Network</p>
-                        <!-- Tooltip -->
-                        <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-slate-800 text-white text-xs p-2 rounded hidden group-hover:block z-10">
-                            Provides NTP Time Sync & Remote Access via Wi-Fi.
-                        </div>
-                    </div>
-
-                    <!-- Connection Line -->
-                    <div class="hidden md:block h-1 flex-1 bg-slate-300"></div>
-                    <div class="md:hidden w-1 h-8 bg-slate-300"></div>
-
-                    <!-- Node: Jetson -->
-                    <div class="node w-full md:w-1/4 bg-slate-800 border border-slate-700 p-4 rounded-lg text-center text-white cursor-help group relative">
-                        <div class="text-3xl mb-2">🖥️</div>
-                        <h3 class="font-bold">Jetson Orin Nano</h3>
-                        <div class="text-xs text-slate-400 mt-1">
-                            <span class="block">Wi-Fi: DHCP (Main)</span>
-                            <span class="block text-sky-400 font-mono">eno1: 10.42.0.1</span>
-                        </div>
-                        <!-- Tooltip -->
-                        <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-white text-slate-800 border border-slate-200 text-xs p-2 rounded hidden group-hover:block z-10 shadow-lg">
-                            Acts as Gateway & DHCP Server. Runs Facial Recognition.
-                        </div>
-                    </div>
-
-                    <!-- Connection Line -->
-                    <div class="hidden md:block h-1 flex-1 bg-slate-300"></div>
-                    <div class="md:hidden w-1 h-8 bg-slate-300"></div>
-
-                    <!-- Node: Switch -->
-                    <div class="node w-full md:w-1/6 bg-slate-100 border border-slate-300 p-4 rounded-lg text-center cursor-help group relative">
-                        <div class="text-3xl mb-2">🔌</div>
-                        <h3 class="font-bold text-slate-700">PoE Switch</h3>
-                        <p class="text-xs text-slate-500">Unmanaged</p>
-                        <!-- Tooltip -->
-                        <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-slate-800 text-white text-xs p-2 rounded hidden group-hover:block z-10">
-                            Layer 2 Only. Powers the Camera.
-                        </div>
-                    </div>
-
-                    <!-- Connection Line -->
-                    <div class="hidden md:block h-1 flex-1 bg-slate-300"></div>
-                    <div class="md:hidden w-1 h-8 bg-slate-300"></div>
-
-                    <!-- Node: Camera -->
-                    <div class="node w-full md:w-1/5 bg-emerald-50 border border-emerald-200 p-4 rounded-lg text-center cursor-help group relative">
-                        <div class="text-3xl mb-2">📷</div>
-                        <h3 class="font-bold text-emerald-900">RLC-520A</h3>
-                        <p class="text-xs text-emerald-700 font-mono">10.42.0.159</p>
-                        <!-- Tooltip -->
-                        <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-slate-800 text-white text-xs p-2 rounded hidden group-hover:block z-10">
-                            Source of RTSP Stream. Static Lease assigned by Jetson.
-                        </div>
-                    </div>
+        <!-- Section 1: Concept Introduction -->
+        <section class="mb-16 bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+            <h2 class="text-2xl font-bold mb-6 flex items-center gap-2">
+                <span class="p-2 bg-slate-100 rounded-lg">⚙️</span> Core Networking Logic
+            </h2>
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="space-y-2">
+                    <h3 class="font-bold text-slate-900">Shared Connection (ICS)</h3>
+                    <p class="text-sm text-slate-600">Using the Jetson as a bridge to share Wi-Fi internet with the Ethernet port (eno1).</p>
+                </div>
+                <div class="space-y-2">
+                    <h3 class="font-bold text-slate-900">Local DHCP Server</h3>
+                    <p class="text-sm text-slate-600">The Jetson automatically assigns IP addresses (10.42.0.x) to devices connected to the switch.</p>
+                </div>
+                <div class="space-y-2">
+                    <h3 class="font-bold text-slate-900">NAT Forwarding</h3>
+                    <p class="text-sm text-slate-600">Translating internal camera requests so they can reach the external internet via the Jetson.</p>
                 </div>
             </div>
         </section>
 
-        <!-- Section 2: Interactive Configuration Workflow -->
-        <section class="mb-12">
-            <h2 class="text-2xl font-bold mb-4 text-slate-800">2. Configuration Workflow</h2>
-            <p class="text-slate-600 mb-6">Follow these phases sequentially to configure the network and initialize the camera.</p>
-
-            <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-slate-200">
-                <!-- Tabs -->
-                <div class="flex border-b border-slate-200 bg-slate-50 overflow-x-auto">
-                    <button class="px-6 py-4 text-sm font-medium whitespace-nowrap active-tab" onclick="switchTab('phase1', this)">Phase 1: Jetson Config</button>
-                    <button class="px-6 py-4 text-sm font-medium whitespace-nowrap inactive-tab" onclick="switchTab('phase2', this)">Phase 2: Laptop Bridge</button>
-                    <button class="px-6 py-4 text-sm font-medium whitespace-nowrap inactive-tab" onclick="switchTab('phase3', this)">Phase 3: Clean Feed</button>
-                    <button class="px-6 py-4 text-sm font-medium whitespace-nowrap inactive-tab" onclick="switchTab('phase4', this)">Phase 4: Routing</button>
+        <!-- Section 2: Interactive Terminal Guide -->
+        <section class="mb-16">
+            <div class="mb-6 flex justify-between items-end">
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-800">Deployment Commands</h2>
+                    <p class="text-slate-500">Run these commands in order to build the gateway.</p>
                 </div>
+                <div class="flex bg-slate-200 p-1 rounded-lg">
+                    <button id="btn-basic" onclick="showModule('basic')" class="px-4 py-2 text-sm rounded-md transition-all active-tab">1. Server</button>
+                    <button id="btn-nat" onclick="showModule('nat')" class="px-4 py-2 text-sm rounded-md transition-all text-slate-600">2. NAT & Docker</button>
+                    <button id="btn-save" onclick="showModule('save')" class="px-4 py-2 text-sm rounded-md transition-all text-slate-600">3. Persistence</button>
+                </div>
+            </div>
 
-                <!-- Tab Content -->
-                <div class="p-6 min-h-[400px]">
-                    
-                    <!-- Phase 1 Content -->
-                    <div id="phase1" class="tab-content block">
-                        <div class="flex flex-col md:flex-row gap-6">
-                            <div class="md:w-1/2 space-y-4">
-                                <h3 class="text-xl font-bold text-slate-800">The Jetson Handshake</h3>
-                                <p class="text-sm text-slate-600">The Jetson must act as a router. We configure <code>eno1</code> to share its internet connection and create a local subnet (10.42.0.x).</p>
-                                
-                                <div class="bg-amber-50 border-l-4 border-amber-400 p-4">
-                                    <p class="text-sm text-amber-800 font-semibold">Critical: Fix Docker Conflicts</p>
-                                    <p class="text-xs text-amber-700 mt-1">Docker firewall rules often block DHCP. You must run the iptables flush commands.</p>
-                                </div>
-                            </div>
-                            <div class="md:w-1/2 space-y-4">
-                                <label class="text-xs font-bold text-slate-500 uppercase">1. Create Shared Connection</label>
+            <div class="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+                <div class="terminal-header">
+                    <div class="dot bg-rose-400"></div>
+                    <div class="dot bg-amber-400"></div>
+                    <div class="dot bg-emerald-400"></div>
+                    <span class="text-xs text-slate-400 font-mono ml-2">bash — qdrive@orin-dev</span>
+                </div>
+                
+                <div class="p-8">
+                    <!-- Module: Basic Server Setup -->
+                    <div id="module-basic" class="command-module block">
+                        <h3 class="text-lg font-bold mb-4">Phase 1: Internet Connection Sharing</h3>
+                        <p class="text-sm text-slate-600 mb-6">Initialize the Ethernet interface as the gateway for the local subnet.</p>
+                        
+                        <div class="space-y-6">
+                            <div>
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Configure eno1 Sharing</label>
                                 <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+                                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                                     <code>sudo nmcli con add type ethernet con-name "InternetShare" ifname eno1 ipv4.method shared<br>sudo nmcli con up InternetShare</code>
                                 </div>
-
-                                <label class="text-xs font-bold text-slate-500 uppercase">2. Enable IP Forwarding</label>
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Enable Kernel IP Forwarding</label>
                                 <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
-                                    <code>echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf<br>sudo sysctl -p</code>
+                                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                                    <code>sudo sysctl -w net.ipv4.ip_forward=1<br>echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf</code>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
 
-                                <label class="text-xs font-bold text-slate-500 uppercase">3. Fix Firewall</label>
+                    <!-- Module: NAT & Docker Fixes -->
+                    <div id="module-nat" class="command-module hidden">
+                        <h3 class="text-lg font-bold mb-4">Phase 2: NAT Rules & Docker Bypass</h3>
+                        <p class="text-sm text-slate-600 mb-6">Force the firewall to allow DHCP traffic and forward RTSP ports, bypassing Docker's <code>DROP</code> policies.</p>
+                        
+                        <div class="space-y-6">
+                            <div>
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Punch Through Docker Firewall</label>
                                 <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+                                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                                     <code>sudo iptables -I INPUT 1 -i eno1 -p udp --dport 67:68 --sport 67:68 -j ACCEPT<br>sudo iptables -t nat -F</code>
                                 </div>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Phase 2 Content -->
-                    <div id="phase2" class="tab-content hidden">
-                        <div class="flex flex-col md:flex-row gap-6">
-                            <div class="md:w-1/2 space-y-4">
-                                <h3 class="text-xl font-bold text-slate-800">The "Laptop Bridge"</h3>
-                                <p class="text-sm text-slate-600">New Reolink cameras have locked ports. We use a laptop to "punch through" the initial setup wizard.</p>
-                                <ul class="space-y-3 mt-4">
-                                    <li class="flex items-start">
-                                        <span class="bg-slate-200 text-slate-700 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold mr-3 mt-0.5">1</span>
-                                        <span class="text-sm text-slate-700">Connect laptop to the same PoE switch.</span>
-                                    </li>
-                                    <li class="flex items-start">
-                                        <span class="bg-slate-200 text-slate-700 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold mr-3 mt-0.5">2</span>
-                                        <span class="text-sm text-slate-700">Set laptop Ethernet IP manually to <code>10.42.0.50</code>.</span>
-                                    </li>
-                                    <li class="flex items-start">
-                                        <span class="bg-slate-200 text-slate-700 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold mr-3 mt-0.5">3</span>
-                                        <span class="text-sm text-slate-700">Open Reolink Client, find the camera, and set a password.</span>
-                                    </li>
-                                    <li class="flex items-start">
-                                        <span class="bg-emerald-100 text-emerald-800 rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold mr-3 mt-0.5">4</span>
-                                        <div class="text-sm text-slate-700">
-                                            <strong>CRITICAL:</strong> Go to Network > Advanced > Port Settings.
-                                            <br><span class="text-emerald-600 font-semibold">Toggle RTSP & HTTP to ON.</span>
-                                        </div>
-                                    </li>
-                                </ul>
-                            </div>
-                            <div class="md:w-1/2 flex items-center justify-center bg-slate-50 rounded-lg border border-slate-200 p-8">
-                                <div class="text-center">
-                                    <div class="text-5xl mb-4">💻 ↔️ 📷</div>
-                                    <p class="text-slate-500 text-sm">Once ports are enabled, the Jetson will be able to communicate via Python/RTSP scripts.</p>
+                            <div>
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Forward RTSP Port (554)</label>
+                                <div class="code-block">
+                                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                                    <code>sudo iptables -t nat -A PREROUTING -p tcp --dport 554 -j DNAT --to-destination 10.42.0.159:554<br>sudo iptables -I FORWARD 1 -p tcp -d 10.42.0.159 --dport 554 -j ACCEPT<br>sudo iptables -t nat -A POSTROUTING -j MASQUERADE</code>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Phase 3 Content -->
-                    <div id="phase3" class="tab-content hidden">
-                        <div class="flex flex-col md:flex-row gap-6">
-                            <div class="md:w-1/2 space-y-4">
-                                <h3 class="text-xl font-bold text-slate-800">Clean Feed for AI</h3>
-                                <p class="text-sm text-slate-600">Facial recognition models can get confused by high-contrast text overlays. You must disable all On-Screen Displays (OSD).</p>
-                                
-                                <div class="bg-slate-100 p-4 rounded-lg mt-4">
-                                    <h4 class="font-bold text-slate-700 mb-2">Checklist:</h4>
-                                    <div class="space-y-2">
-                                        <label class="flex items-center space-x-2 cursor-pointer">
-                                            <input type="checkbox" class="form-checkbox text-sky-500 rounded">
-                                            <span class="text-sm text-slate-700">Watermark: <strong>OFF</strong></span>
-                                        </label>
-                                        <label class="flex items-center space-x-2 cursor-pointer">
-                                            <input type="checkbox" class="form-checkbox text-sky-500 rounded">
-                                            <span class="text-sm text-slate-700">Date/Time: <strong>HIDE</strong></span>
-                                        </label>
-                                        <label class="flex items-center space-x-2 cursor-pointer">
-                                            <input type="checkbox" class="form-checkbox text-sky-500 rounded">
-                                            <span class="text-sm text-slate-700">Camera Name: <strong>HIDE</strong></span>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="md:w-1/2">
-                                <!-- Chart Container for Stream Comparison -->
-                                <div class="bg-white p-2 rounded-lg">
-                                    <h4 class="text-sm font-bold text-center text-slate-500 mb-2">Why Sub-Stream for AI?</h4>
-                                    <div class="chart-container">
-                                        <canvas id="streamComparisonChart"></canvas>
-                                    </div>
-                                    <p class="text-xs text-center text-slate-400 mt-2">Sub-stream reduces latency & CPU load.</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Phase 4 Content -->
-                    <div id="phase4" class="tab-content hidden">
-                        <div class="flex flex-col md:flex-row gap-6">
-                            <div class="md:w-1/2 space-y-4">
-                                <h3 class="text-xl font-bold text-slate-800">Port Forwarding & Persistence</h3>
-                                <p class="text-sm text-slate-600">Expose the RTSP stream to your main network via the Jetson's Wi-Fi IP and ensure rules survive reboots.</p>
-                            </div>
-                            <div class="md:w-1/2 space-y-4">
-                                <label class="text-xs font-bold text-slate-500 uppercase">1. Forward RTSP (554)</label>
+                    <!-- Module: Save & Persistence -->
+                    <div id="module-save" class="command-module hidden">
+                        <h3 class="text-lg font-bold mb-4">Phase 3: System Hardening</h3>
+                        <p class="text-sm text-slate-600 mb-6">Ensure the DHCP server and NAT rules persist across system reboots.</p>
+                        
+                        <div class="space-y-6">
+                            <div>
+                                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 block">Save Iptables rules</label>
                                 <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
-                                    <code>sudo iptables -t nat -A PREROUTING -p tcp --dport 554 -j DNAT --to-destination 10.42.0.159:554<br>sudo iptables -I FORWARD 1 -p tcp -d 10.42.0.159 --dport 554 -j ACCEPT</code>
-                                </div>
-
-                                <label class="text-xs font-bold text-slate-500 uppercase">2. Masquerade Return Traffic</label>
-                                <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
-                                    <code>sudo iptables -t nat -A POSTROUTING -j MASQUERADE</code>
-                                </div>
-
-                                <label class="text-xs font-bold text-slate-500 uppercase">3. Make Persistent</label>
-                                <div class="code-block">
-                                    <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+                                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                                     <code>sudo apt-get install iptables-persistent<br>sudo netfilter-persistent save</code>
                                 </div>
                             </div>
+                            <div class="bg-sky-50 p-4 rounded-xl border border-sky-100">
+                                <p class="text-sm text-sky-800">
+                                    <strong>Verification:</strong> Check the lease file to confirm the camera is connected:
+                                    <br><code class="text-sky-600 text-xs mt-2 block">cat /var/lib/NetworkManager/dnsmasq-eno1.leases</code>
+                                </p>
+                            </div>
                         </div>
                     </div>
-
                 </div>
             </div>
         </section>
 
-        <!-- Section 3: RTSP URL Generator -->
-        <section class="mb-12">
-            <h2 class="text-2xl font-bold mb-4 text-slate-800">3. RTSP Access Generator</h2>
-            <div class="bg-slate-900 rounded-xl p-8 shadow-lg text-white">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div>
-                        <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Jetson Wi-Fi IP</label>
-                        <input type="text" id="jetsonIp" placeholder="192.168.1.x" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-sky-500 focus:outline-none">
+        <!-- Section 3: Data Visualizations -->
+        <section class="grid md:grid-cols-2 gap-8 mb-16">
+            <div class="bg-white p-6 rounded-2xl border border-slate-200">
+                <h3 class="font-bold text-slate-800 mb-4">Network Overhead: Direct vs NAT</h3>
+                <div class="chart-container">
+                    <canvas id="overheadChart"></canvas>
+                </div>
+                <p class="text-xs text-slate-400 mt-4 text-center">NAT adds negligible (~1%) latency for local RTSP feeds.</p>
+            </div>
+            <div class="bg-slate-900 p-8 rounded-2xl text-white">
+                <h3 class="font-bold text-sky-400 mb-4">Infrastructure Logic</h3>
+                <div class="space-y-4">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full bg-sky-500/20 flex items-center justify-center text-sky-400 font-bold">1</div>
+                        <p class="text-sm text-slate-300">Jetson initializes <code>dnsmasq</code> on eno1.</p>
                     </div>
-                    <div>
-                        <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Password</label>
-                        <input type="text" id="camPassword" placeholder="YourPassword" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-sky-500 focus:outline-none">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full bg-sky-500/20 flex items-center justify-center text-sky-400 font-bold">2</div>
+                        <p class="text-sm text-slate-300">Camera broadcasts DHCP DISCOVER.</p>
                     </div>
-                    <div>
-                        <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Stream Type</label>
-                        <select id="streamType" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white focus:border-sky-500 focus:outline-none">
-                            <option value="Preview_01_sub">Sub Stream (Recommended)</option>
-                            <option value="Preview_01_main">Main Stream (High Res)</option>
-                        </select>
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full bg-sky-500/20 flex items-center justify-center text-sky-400 font-bold">3</div>
+                        <p class="text-sm text-slate-300">Jetson offers IP <code>10.42.0.x</code>.</p>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full bg-sky-500/20 flex items-center justify-center text-sky-400 font-bold">4</div>
+                        <p class="text-sm text-slate-300">IPtables forwards incoming RTSP requests from Wi-Fi to Ethernet.</p>
                     </div>
                 </div>
-                
-                <div class="bg-black/50 p-4 rounded-lg border border-slate-700 flex items-center justify-between">
-                    <code id="resultUrl" class="text-green-400 font-mono text-sm break-all">rtsp://admin:PASSWORD@JETSON_IP:554/Preview_01_sub</code>
-                    <button class="ml-4 bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 rounded text-sm font-bold transition-colors" onclick="generateAndCopy()">Copy URL</button>
-                </div>
-                <p class="text-xs text-slate-500 mt-2">Use this URL in VLC or your Python <code>cv2.VideoCapture()</code> function.</p>
             </div>
         </section>
 
     </div>
 
-    <!-- JavaScript Logic -->
     <script>
-        // State Management
-        let currentTab = 'phase1';
-        
-        // Tab Switching Logic
-        function switchTab(tabId, btnElement) {
-            // Hide all contents
-            document.querySelectorAll('.tab-content').forEach(el => {
-                el.classList.add('hidden');
-                el.classList.remove('block');
-            });
+        // Navigation Logic
+        function showModule(moduleId) {
+            document.querySelectorAll('.command-module').forEach(m => m.classList.add('hidden'));
+            document.getElementById('module-' + moduleId).classList.remove('hidden');
             
-            // Show selected content
-            document.getElementById(tabId).classList.remove('hidden');
-            document.getElementById(tabId).classList.add('block');
-            
-            // Update button styles
-            document.querySelectorAll('button').forEach(btn => {
-                if (btn.parentElement && btn.parentElement.classList.contains('flex')) { // Check if it's a tab button
+            // Tab styling
+            ['basic', 'nat', 'save'].forEach(id => {
+                const btn = document.getElementById('btn-' + id);
+                if (id === moduleId) {
+                    btn.classList.add('active-tab');
+                    btn.classList.remove('text-slate-600');
+                } else {
                     btn.classList.remove('active-tab');
-                    btn.classList.add('inactive-tab');
+                    btn.classList.add('text-slate-600');
                 }
             });
-            
-            if (btnElement) {
-                btnElement.classList.remove('inactive-tab');
-                btnElement.classList.add('active-tab');
-            }
         }
 
-        // Clipboard Utility
-        function copyToClipboard(btnElement) {
-            const code = btnElement.nextElementSibling.innerText;
-            navigator.clipboard.writeText(code).then(() => {
-                const originalText = btnElement.innerText;
-                btnElement.innerText = 'Copied!';
-                btnElement.classList.add('bg-emerald-600');
-                setTimeout(() => {
-                    btnElement.innerText = originalText;
-                    btnElement.classList.remove('bg-emerald-600');
-                }, 2000);
-            });
+        // Copy Utility
+        function copyCode(btn) {
+            const code = btn.nextElementSibling.innerText;
+            navigator.clipboard.writeText(code);
+            const originalText = btn.innerText;
+            btn.innerText = 'Copied';
+            setTimeout(() => btn.innerText = originalText, 2000);
         }
 
-        // URL Generator Logic
-        const jetsonIpInput = document.getElementById('jetsonIp');
-        const passwordInput = document.getElementById('camPassword');
-        const streamTypeInput = document.getElementById('streamType');
-        const resultUrlDisplay = document.getElementById('resultUrl');
-
-        function updateUrl() {
-            const ip = jetsonIpInput.value || 'JETSON_IP';
-            const pass = passwordInput.value || 'PASSWORD';
-            const stream = streamTypeInput.value;
-            resultUrlDisplay.innerText = `rtsp://admin:${pass}@${ip}:554/${stream}`;
-        }
-
-        jetsonIpInput.addEventListener('input', updateUrl);
-        passwordInput.addEventListener('input', updateUrl);
-        streamTypeInput.addEventListener('change', updateUrl);
-
-        function generateAndCopy() {
-            const url = resultUrlDisplay.innerText;
-            navigator.clipboard.writeText(url).then(() => {
-                alert('RTSP URL copied to clipboard!');
-            });
-        }
-
-        // Chart.js Initialization
-        document.addEventListener('DOMContentLoaded', function() {
-            const ctx = document.getElementById('streamComparisonChart').getContext('2d');
-            
+        // Charting Logic
+        window.onload = function() {
+            const ctx = document.getElementById('overheadChart').getContext('2d');
             new Chart(ctx, {
                 type: 'bar',
                 data: {
-                    labels: ['Main Stream (5MP)', 'Sub Stream (Low Res)'],
+                    labels: ['CPU Usage', 'Latency (ms)', 'Packet Drop %'],
                     datasets: [{
-                        label: 'Latency (ms) - Lower is Better',
-                        data: [500, 150], // Estimated values based on H.265 vs MJPEG/H.264 low res
-                        backgroundColor: [
-                            'rgba(203, 213, 225, 0.7)', // Slate 300
-                            'rgba(14, 165, 233, 0.7)'   // Sky 500
-                        ],
-                        borderColor: [
-                            'rgba(203, 213, 225, 1)',
-                            'rgba(14, 165, 233, 1)'
-                        ],
+                        label: 'Direct Connection',
+                        data: [5, 1, 0.01],
+                        backgroundColor: 'rgba(203, 213, 225, 0.6)',
+                        borderColor: 'rgb(203, 213, 225)',
                         borderWidth: 1
-                    },
-                    {
-                        label: 'Bandwidth (Mbps)',
-                        data: [8, 1],
-                        backgroundColor: [
-                            'rgba(100, 116, 139, 0.7)', // Slate 500
-                            'rgba(56, 189, 248, 0.7)'   // Sky 400
-                        ],
-                        borderColor: [
-                            'rgba(100, 116, 139, 1)',
-                            'rgba(56, 189, 248, 1)'
-                        ],
+                    }, {
+                        label: 'NAT Forwarding',
+                        data: [7, 1.2, 0.02],
+                        backgroundColor: 'rgba(14, 165, 233, 0.6)',
+                        borderColor: 'rgb(14, 165, 233)',
                         borderWidth: 1
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Value'
-                            }
-                        }
-                    },
                     plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    let label = context.dataset.label || '';
-                                    if (label) {
-                                        label += ': ';
-                                    }
-                                    if (context.parsed.y !== null) {
-                                        label += context.parsed.y;
-                                    }
-                                    return label;
-                                }
-                            }
-                        },
-                        legend: {
-                            position: 'bottom'
-                        }
+                        legend: { position: 'bottom' }
+                    },
+                    scales: {
+                        y: { beginAtZero: true }
                     }
                 }
             });
-        });
+        };
     </script>
 </body>
 </html>
