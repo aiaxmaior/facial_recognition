@@ -38,6 +38,16 @@ import sqlite3
 import json
 from deepface import DeepFace
 
+# Import GStreamer camera wrapper for RTSP streams
+# This uses the same pipeline as DeepStream recognition
+try:
+    from gstreamer_camera import GStreamerCamera
+    GSTREAMER_AVAILABLE = True
+    logger.info("✅ GStreamer camera wrapper available")
+except ImportError:
+    GSTREAMER_AVAILABLE = False
+    logger.warning("⚠️ GStreamer camera wrapper not found, RTSP may have color issues")
+
 global CAMERA_IP, PORT, STREAM, USER, PASSWORD, capture_system, WEBCAM_INDEX
 CAMERA_IP = None
 PORT = 554
@@ -161,10 +171,11 @@ except ImportError:
     print("⚠️ pygame not installed - audio notifications disabled. Install with: pip install pygame")
 
 # Configuration
-CHOSEN_MODEL = "Facenet512"
-# Detector options: retinaface (most accurate), mtcnn (good balance), opencv (fastest, lenient)
-# Using 'mtcnn' for better handling of angled faces during enrollment
-CHOSEN_DETECTOR = "mtcnn"
+# Updated to match recognition system for optimal compatibility
+CHOSEN_MODEL = "ArcFace"  # Best accuracy (was Facenet512)
+# Detector options: retinaface (most accurate), yolov8 (fast + accurate), mtcnn (good balance)
+# Using 'yolov8' for modern, fast, and accurate face detection
+CHOSEN_DETECTOR = "yolov8"  # Faster and more modern than mtcnn
 OUTPUT_DIR = "enrolled_faces"
 AUDIO_DIR = "audio"
 COUNTDOWN_SECONDS = 3
@@ -424,16 +435,30 @@ class GuidedEnrollmentCapture:
         """Start camera capture thread."""
         if self.running:
             return
-        
+
         # Initialize MediaPipe on first camera start (deferred for Jetson performance)
         self._init_mediapipe()
         if self.camera_ip:
-            self.cap = cv2.VideoCapture(self.rtsp_url)
+            # Use GStreamer wrapper for RTSP to match DeepStream recognition pipeline
+            if GSTREAMER_AVAILABLE:
+                logger.info(f"Opening RTSP via GStreamer (DeepStream-compatible): {self.rtsp_url}")
+                self.cap = GStreamerCamera(self.rtsp_url, width=640, height=480)
+                self.cap.open()
+            else:
+                # Fallback to FFmpeg (may have color issues)
+                logger.warning(f"GStreamer wrapper not available, using FFmpeg (color may mismatch DeepStream)")
+                logger.info(f"Opening RTSP stream via FFmpeg: {self.rtsp_url}")
+                self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('B','G','R','3'))
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self.cap.set(cv2.CAP_PROP_FPS, 60)
         else:
             self.cap = cv2.VideoCapture(self.camera_index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 60)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, 60)
         
         if not self.cap.isOpened():
             return False
@@ -512,15 +537,21 @@ class GuidedEnrollmentCapture:
         process_every_n = 2  # Only process every Nth frame (reduces CPU by ~50%)
         target_fps = 15  # Target processing FPS
         frame_time = 1.0 / target_fps
-        
+
         while self.running and self.cap.isOpened():
             loop_start = time.time()
-            
+
             ret, frame = self.cap.read()
             if not ret:
                 continue
-            
+
             frame_count += 1
+
+            # Debug: Log first frame to verify color format
+            if frame_count == 1:
+                logger.info(f"First frame received: shape={frame.shape}, dtype={frame.dtype}, mean={frame.mean():.2f}")
+                if hasattr(self.cap, 'getBackendName'):
+                    logger.info(f"VideoCapture backend: {self.cap.getBackendName()}")
             
             # Only process every Nth frame to reduce CPU load
             if frame_count % process_every_n == 0:
@@ -1284,8 +1315,10 @@ def create_blocks():
                 }
                 /* Fix label styling across browsers */
                 label, .label-wrap, .label-wrap span, .block-label, .block-label span {
-                    color: #5bc0de !important;
-                    background-color: transparent !important;
+                    color: #3b82f6 !important;
+                    background-color: #3b82f6 !important;
+                    border-radius: 4px !important;
+                    padding: 2px 8px !important;
                 }
                 /* Input field styling */
                 input, textarea, .textbox {
@@ -1307,7 +1340,17 @@ def create_blocks():
                     box-shadow: 0 6px 20px rgba(40, 167, 69, 0.6) !important;
                 }
                 footer { display: none !important; }
-                .gradio-container footer { display: none !important; }
+                .gradio-container footer { display: no !important; }
+            """,
+            js="""
+            function() {
+                // Force dark theme on page load
+                if (window.location.search.indexOf('__theme=dark') === -1) {
+                    const url = new URL(window.location);
+                    url.searchParams.set('__theme', 'dark');
+                    window.location.replace(url.toString());
+                }
+            }
             """
         )
     else:
@@ -1326,7 +1369,7 @@ with create_blocks() as demo:
         gr.HTML(f"""
         <div style="display:flex; align-items:center; gap:15px; margin-bottom:20px; justify-content: center;">
             <img src="{logo_base64}" alt="QRyde Logo" class="logo" style="height:150px; margin-right:12%;" />
-            <h1 style="margin:0; font-size:2em;">Welcome to QRyde Face Enrollment</h1>
+            <h1 style="margin:0; font-size:2em;">Welcome to QRyde Face Enrollmen`t</h1>
         </div>
         """)
         gr.Markdown("""
@@ -1341,13 +1384,13 @@ with create_blocks() as demo:
             </p>
 
             <p style="font-size:1.2em; font-weight:bold; text-align: center;">
-                This will take <strong>5 quick photos</strong> of your face from different angles to set up your profile.
+                This will take <strong>5 quick photos</strong> cof your face from different angles to set up your profile.
             </p> 
             
             <hr style="border-color: #444;">
             
-            <h3 style="color: #ffffff; margin-bottom: 10px;">How it works:</h3>
-            <ol style="color: #ffffff; font-size: 1.1em; line-height: 1.8;">
+            <h3 style="color: #000000; margin-bottom: 10px;">How it works:</h3>
+            <ol style="color: #000000; size: 1.1em; line-height: 1.8;">
                 <li><strong style="color: #5bc0de;">Enter your first and last name</strong> below</li>
                 <li><strong style="color: #5bc0de;">Follow the on-screen prompts</strong> - just move your head as instructed</li>
                 <li><strong style="color: #5bc0de;">Hold still</strong> when the border turns green</li>
