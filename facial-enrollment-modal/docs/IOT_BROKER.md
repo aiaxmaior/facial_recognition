@@ -114,46 +114,54 @@ After successful capture, the modal submits to the Dashboard Bridge, which store
 
 #### GET `/api/iot/devices`
 
-Returns list of edge devices with facial recognition capability.
+Returns list of edge devices with face recognition capability.
+
+> **Note:** Aligns with `IoT_Devices` MongoDB collection schema from `IOT_BROKER_FRAMEWORK_revised.md`
 
 **Query Parameters:**
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `capability` | `string` | `"facial_recognition"` | Filter by device capability |
-| `status` | `string` | `"online"` | Filter by device status |
-| `location` | `string` | - | Filter by location/site |
+| `capability` | `string` | `"face_recognition"` | Filter: `"face_recognition"` or `"emotion_monitoring"` |
+| `status` | `string` | `"online"` | Filter: `"online"`, `"offline"`, or `"provisioning"` |
+| `location_label` | `string` | - | Filter by location label |
 
 **Response:**
 ```json
 {
   "devices": [
     {
-      "device_id": "cam-lobby-001",
-      "name": "Lobby Entrance Camera",
-      "location": "Building A - Main Lobby",
+      "device_id": "cam-001",
+      "display_name": "Lobby Entrance Camera",
+      "device_category": "camera",
+      "capability": "face_recognition",
+      "location_label": "Main entrance outside",
+      "location_geo": [-122.4194, 37.7749],
       "status": "online",
-      "capabilities": ["facial_recognition", "emotion_detection"],
-      "last_heartbeat": "2026-01-16T10:29:45Z",
+      "last_heartbeat_at": "2026-01-16T10:29:45Z",
       "enrolled_count": 142,
       "sync_version": 847
     },
     {
-      "device_id": "cam-breakroom-002",
-      "name": "Break Room Camera",
-      "location": "Building A - Floor 2",
+      "device_id": "cam-002",
+      "display_name": "Break Room Camera",
+      "device_category": "camera",
+      "capability": "face_recognition",
+      "location_label": "Building A - Floor 2",
+      "location_geo": null,
       "status": "online",
-      "capabilities": ["facial_recognition"],
-      "last_heartbeat": "2026-01-16T10:29:52Z",
+      "last_heartbeat_at": "2026-01-16T10:29:52Z",
       "enrolled_count": 142,
       "sync_version": 847
     },
     {
-      "device_id": "cam-parking-003",
-      "name": "Parking Garage Entry",
-      "location": "Parking Structure B",
+      "device_id": "cam-003",
+      "display_name": "Parking Garage Entry",
+      "device_category": "camera",
+      "capability": "face_recognition",
+      "location_label": "Parking Structure B",
+      "location_geo": [-122.4180, 37.7755],
       "status": "offline",
-      "capabilities": ["facial_recognition"],
-      "last_heartbeat": "2026-01-16T08:15:00Z",
+      "last_heartbeat_at": "2026-01-16T08:15:00Z",
       "enrolled_count": 140,
       "sync_version": 845
     }
@@ -164,18 +172,26 @@ Returns list of edge devices with facial recognition capability.
 }
 ```
 
-### TypeScript Interface
+### TypeScript Interface (matches IoT_Devices schema)
 
 ```typescript
+/**
+ * Maps to IoT_Devices MongoDB collection
+ * See: docs/IOT_BROKER_FRAMEWORK_revised.md
+ */
 interface EdgeDevice {
-  device_id: string;
-  name: string;
-  location: string;
-  status: 'online' | 'offline' | 'maintenance';
-  capabilities: ('facial_recognition' | 'emotion_detection')[];
-  last_heartbeat: string;  // ISO8601
-  enrolled_count: number;
-  sync_version: number;
+  device_id: string;                              // Unique ID (e.g., "cam-001")
+  display_name: string;                           // Human-readable name
+  device_category: string;                        // "camera", etc.
+  capability: 'face_recognition' | 'emotion_monitoring';
+  location_label?: string;                        // Friendly location name
+  location_geo?: [number, number] | null;         // [longitude, latitude]
+  status: 'online' | 'offline' | 'provisioning';
+  last_heartbeat_at: string | null;               // ISO8601 or null
+  
+  // Extended fields for enrollment sync (not in base schema)
+  enrolled_count?: number;
+  sync_version?: number;
 }
 
 interface DeviceListResponse {
@@ -198,7 +214,7 @@ Push a facial profile to selected edge devices.
 ```json
 {
   "employee_id": "EMP123456",
-  "target_devices": ["cam-lobby-001", "cam-breakroom-002"],
+  "target_devices": ["cam-001", "cam-002"],
   "push_mode": "selected"
 }
 ```
@@ -207,8 +223,8 @@ Push a facial profile to selected edge devices.
 | Mode | Description |
 |------|-------------|
 | `"selected"` | Push only to devices in `target_devices` array |
-| `"all"` | Push to ALL online devices with facial_recognition capability |
-| `"location"` | Push to all devices at a specific location |
+| `"all"` | Push to ALL online devices with `capability="face_recognition"` |
+| `"location"` | Push to all devices matching `location_label` |
 
 **Response:**
 ```json
@@ -223,12 +239,12 @@ Push a facial profile to selected edge devices.
     "new_status": "enrolled",
     "results": [
       {
-        "device_id": "cam-lobby-001",
+        "device_id": "cam-001",
         "success": true,
         "sync_version": 848
       },
       {
-        "device_id": "cam-breakroom-002",
+        "device_id": "cam-002",
         "success": true,
         "sync_version": 848
       }
@@ -249,9 +265,9 @@ Push a facial profile to selected edge devices.
     "devices_failed": 1,
     "new_status": "pending",
     "results": [
-      { "device_id": "cam-lobby-001", "success": true },
-      { "device_id": "cam-breakroom-002", "success": true },
-      { "device_id": "cam-parking-003", "success": false, "error": "Device offline" }
+      { "device_id": "cam-001", "success": true },
+      { "device_id": "cam-002", "success": true },
+      { "device_id": "cam-003", "success": false, "error": "Device offline" }
     ]
   }
 }
@@ -305,20 +321,25 @@ The enrollment modal should include a device deployment step after capture:
 │                                                                 │
 │  Select devices to receive this facial profile:                │
 │                                                                 │
-│  ☑️  🟢 Lobby Entrance Camera                                   │
-│        Building A - Main Lobby                                  │
+│  ☑️  🟢 Lobby Entrance Camera          [cam-001]               │
+│        📍 Main entrance outside                                 │
 │                                                                 │
-│  ☑️  🟢 Break Room Camera                                       │
-│        Building A - Floor 2                                     │
+│  ☑️  🟢 Break Room Camera              [cam-002]               │
+│        📍 Building A - Floor 2                                  │
 │                                                                 │
-│  ☐  🔴 Parking Garage Entry (Offline)                          │
-│        Parking Structure B                                      │
+│  ☐  🔴 Parking Garage Entry (Offline)  [cam-003]               │
+│        📍 Parking Structure B                                   │
+│                                                                 │
+│  ☐  🟡 New Kiosk (Provisioning)        [dev-001]               │
+│        📍 Reception Desk                                        │
 │                                                                 │
 │  ───────────────────────────────────────────────────           │
 │  ☐  Select All Online Devices (2)                              │
 │                                                                 │
 │           [Cancel]    [Deploy to Selected (2)]                  │
 └─────────────────────────────────────────────────────────────────┘
+
+Legend: 🟢 online  🔴 offline  🟡 provisioning
 ```
 
 ### Suggested Component Props Extension
@@ -424,35 +445,68 @@ interface DeploymentResult {
 
 ## Pydantic Schemas (Python Backend)
 
+> Aligns with `IoT_Devices` and `IoT_Events` MongoDB schemas from `IOT_BROKER_FRAMEWORK_revised.md`
+
 ```python
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 
 class EdgeDevice(BaseModel):
-    device_id: str
-    name: str
-    location: str
-    status: str  # 'online', 'offline', 'maintenance'
-    capabilities: List[str]
-    last_heartbeat: datetime
-    enrolled_count: int
-    sync_version: int
+    """
+    Maps to IoT_Devices MongoDB collection.
+    See: docs/IOT_BROKER_FRAMEWORK_revised.md
+    """
+    device_id: str = Field(..., description="Unique device ID (e.g., 'cam-001')")
+    display_name: str = Field(..., description="Human-readable device name")
+    device_category: str = Field(default="camera", description="Device type")
+    capability: Literal["face_recognition", "emotion_monitoring"]
+    location_label: Optional[str] = Field(None, description="Friendly location name")
+    location_geo: Optional[List[float]] = Field(None, description="[longitude, latitude]")
+    status: Literal["online", "offline", "provisioning"] = "provisioning"
+    last_heartbeat_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Extended fields for enrollment sync
+    enrolled_count: Optional[int] = None
+    sync_version: Optional[int] = None
+
 
 class PushRequest(BaseModel):
+    """Request to push enrollment to edge devices."""
     employee_id: str
     target_devices: List[str] = []
-    push_mode: str = "selected"  # 'selected', 'all', 'location'
-    location: Optional[str] = None
+    push_mode: Literal["selected", "all", "location"] = "selected"
+    location_label: Optional[str] = None  # For push_mode="location"
+
 
 class PushResult(BaseModel):
+    """Result for a single device push."""
     device_id: str
     success: bool
     sync_version: Optional[int] = None
     error: Optional[str] = None
 
+
 class PushResponse(BaseModel):
+    """Response from enrollment push operation."""
     success: bool
     message: str
     data: dict  # Contains employee_id, devices_updated, results, etc.
+
+
+# Event schemas (for reference - see iot_integration/schemas/event_schemas.py)
+class FaceRecognitionEvent(BaseModel):
+    """
+    Maps to IoT_Events MongoDB collection (event_type="face_recognition").
+    Event ID format: EV1-{timestamp}-{random}
+    """
+    event_id: str = Field(..., description="Format: EV1-{timestamp}-{random}")
+    device_id: str = Field(..., description="Reference to IoT_Devices.device_id")
+    event_type: Literal["face_recognition"] = "face_recognition"
+    event_timestamp: datetime
+    metadata: Optional[dict] = None  # { person_name: str, confidence: float, ... }
+    debug: List[dict] = []
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 ```
