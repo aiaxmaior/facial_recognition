@@ -29,6 +29,13 @@ export function EnrollmentModal({
   const [autoCloseCountdown, setAutoCloseCountdown] = useState(AUTO_CLOSE_DELAY);
   const [isStabilizing, setIsStabilizing] = useState(false);
   const stableCountRef = useRef(0);
+  
+  // Re-enrollment confirmation state
+  const [showReenrollConfirm, setShowReenrollConfirm] = useState(false);
+  const [reenrollConfirmed, setReenrollConfirmed] = useState(false);
+  
+  // Check if user already has enrollment data
+  const hasExistingEnrollment = enrollmentStatus === 'enrolled' || enrollmentStatus === 'pending';
 
   // Camera hook
   const {
@@ -82,11 +89,18 @@ export function EnrollmentModal({
       audioService.setEnabled(enableAudio);
       initializePose();
       startCamera();
+      
+      // Show re-enrollment confirmation if user already has enrollment
+      if (hasExistingEnrollment && !reenrollConfirmed) {
+        setShowReenrollConfirm(true);
+      }
     } else {
       console.log('[EnrollmentModal] Modal closed, cleaning up...');
       stopCamera();
       stopDetection();
       resetCapture();
+      setShowReenrollConfirm(false);
+      setReenrollConfirmed(false);
       
       if (autoCloseTimerRef.current) {
         clearInterval(autoCloseTimerRef.current);
@@ -98,7 +112,7 @@ export function EnrollmentModal({
       stopCamera();
       stopDetection();
     };
-  }, [isOpen]);
+  }, [isOpen, hasExistingEnrollment, reenrollConfirmed]);
 
   // Start detection when camera and pose model are ready
   useEffect(() => {
@@ -244,6 +258,19 @@ export function EnrollmentModal({
     startCapture();
   }, [resetCapture, startCapture]);
 
+  // Re-enrollment confirmation handlers
+  const handleConfirmReenroll = useCallback(() => {
+    console.log('[EnrollmentModal] User confirmed re-enrollment');
+    setShowReenrollConfirm(false);
+    setReenrollConfirmed(true);
+  }, []);
+
+  const handleCancelReenroll = useCallback(() => {
+    console.log('[EnrollmentModal] User cancelled re-enrollment');
+    setShowReenrollConfirm(false);
+    onClose();
+  }, [onClose]);
+
   // Don't render if not open
   if (!isOpen) return null;
 
@@ -366,6 +393,36 @@ export function EnrollmentModal({
                 </button>
               </div>
             )}
+
+            {/* Re-enrollment confirmation overlay */}
+            {showReenrollConfirm && (
+              <div style={styles.reenrollOverlay}>
+                <div style={styles.reenrollBox}>
+                  <WarningIcon />
+                  <h3 style={styles.reenrollTitle}>Existing Profile Found</h3>
+                  <p style={styles.reenrollText}>
+                    {userName ? `${userName} already` : 'This employee already'} has a facial recognition profile
+                    {enrollmentStatus === 'enrolled' 
+                      ? ' that has been published to devices.' 
+                      : ' with pending embeddings.'}
+                  </p>
+                  <p style={styles.reenrollQuestion}>
+                    Would you like to recreate the facial profile for this employee?
+                  </p>
+                  <p style={styles.reenrollWarning}>
+                    This will replace the existing biometric data.
+                  </p>
+                  <div style={styles.reenrollButtons}>
+                    <button onClick={handleCancelReenroll} style={styles.cancelButton}>
+                      Cancel
+                    </button>
+                    <button onClick={handleConfirmReenroll} style={styles.confirmButton}>
+                      Yes, Recreate Profile
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -418,6 +475,16 @@ function InfoIcon() {
       <circle cx="12" cy="12" r="10" />
       <line x1="12" y1="16" x2="12" y2="12" />
       <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  );
+}
+
+function WarningIcon() {
+  return (
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
     </svg>
   );
 }
@@ -651,6 +718,74 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     fontSize: '14px',
     fontWeight: 500,
+    cursor: 'pointer',
+  },
+  // Re-enrollment confirmation styles
+  reenrollOverlay: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    color: '#fff',
+    zIndex: 20,
+  },
+  reenrollBox: {
+    textAlign: 'center',
+    padding: '32px',
+    maxWidth: '420px',
+    backgroundColor: '#1f2937',
+    borderRadius: '12px',
+    border: '1px solid #374151',
+  },
+  reenrollTitle: {
+    margin: '16px 0 8px 0',
+    fontSize: '22px',
+    fontWeight: 600,
+    color: '#f59e0b',
+  },
+  reenrollText: {
+    color: '#d1d5db',
+    fontSize: '14px',
+    lineHeight: 1.6,
+    margin: '8px 0',
+  },
+  reenrollQuestion: {
+    color: '#fff',
+    fontSize: '16px',
+    fontWeight: 500,
+    margin: '16px 0 8px 0',
+  },
+  reenrollWarning: {
+    color: '#ef4444',
+    fontSize: '13px',
+    fontStyle: 'italic',
+    margin: '8px 0 24px 0',
+  },
+  reenrollButtons: {
+    display: 'flex',
+    gap: '12px',
+    justifyContent: 'center',
+  },
+  cancelButton: {
+    padding: '12px 24px',
+    backgroundColor: '#374151',
+    color: '#fff',
+    border: '1px solid #4b5563',
+    borderRadius: '6px',
+    fontSize: '14px',
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  confirmButton: {
+    padding: '12px 24px',
+    backgroundColor: '#f59e0b',
+    color: '#000',
+    border: 'none',
+    borderRadius: '6px',
+    fontSize: '14px',
+    fontWeight: 600,
     cursor: 'pointer',
   },
 };
