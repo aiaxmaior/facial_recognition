@@ -7,9 +7,17 @@
 ```typescript
 // User's enrollment status from backend
 type EnrollmentStatus = 
-  | 'enrolled'      // Completed and published to IoT devices
-  | 'pending'       // Embeddings generated but not pushed to devices
-  | 'unenrolled';   // No enrollment data exists
+  | 'unenrolled'              // No enrollment data exists
+  | 'enrolled'                // All selected devices successfully synced
+  | 'pending:embedding'       // Waiting on DeepFace vectorizer (no response)
+  | 'pending:iot_confirmation'// Waiting for IoT broker response
+  | 'pending:partial'         // IoT partial completion (not all devices synced)
+  | 'pending:error';          // Error occurred, no "complete" from IoT
+
+// Helper to check if status is any pending state
+function isPending(status: EnrollmentStatus): boolean {
+  return status.startsWith('pending:');
+}
 
 // Internal state machine for capture flow
 type CaptureState = 
@@ -88,6 +96,51 @@ interface EnrollmentResult {
   message: string;
   embeddingCount?: number;     // Number of valid face embeddings generated
   profileImageUrl?: string;    // URL to 128x128 profile thumbnail
+}
+```
+
+### DeviceSyncStatus
+Per-device sync status for IoT deployment.
+
+```typescript
+interface DeviceSyncStatus {
+  device_id: string;
+  display_name: string;
+  device_status: 'online' | 'offline' | 'provisioning';
+  sync_status: 'synced' | 'pending' | 'failed' | 'not_deployed';
+  last_sync_at?: string;       // ISO8601 timestamp
+  error?: string;              // Error message if failed
+}
+```
+
+### EnrollmentSyncOverview
+Complete sync overview returned to Dashboard Bridge.
+
+```typescript
+interface EnrollmentSyncOverview {
+  user_id: string;
+  overview_status: EnrollmentStatus;
+  devices_targeted: number;
+  devices_synced: number;
+  devices_pending: number;
+  devices_failed: number;
+  device_details: DeviceSyncStatus[];
+}
+```
+
+### BridgeSubmission
+Final data sent to Dashboard Bridge after enrollment.
+
+```typescript
+interface BridgeSubmission {
+  user_id: string;
+  device_list: string[];           // Device IDs targeted
+  embedding: string;               // Base64 float32 array
+  embedding_dim: number;           // 512 for ArcFace
+  model: string;                   // "ArcFace"
+  thumbnail: string;               // Base64 JPEG 128x128
+  overview_sync_status: EnrollmentStatus;
+  sync_details: DeviceSyncStatus[];
 }
 ```
 

@@ -1,51 +1,284 @@
 # IoT Broker Integration Guide
 
-This document covers the two distinct integration points for the enrollment modal:
+This document covers the enrollment modal's communication with three systems:
 
-1. **Dashboard Bridge** - Stores enrollment data in central WFM system
-2. **IoT Broker** - Pushes facial profiles to edge devices
+1. **IoT Broker** - Device enumeration, sync status, embedding deployment
+2. **DeepFace Vectorizer** - Embedding generation from captured images
+3. **Dashboard Bridge** - Final enrollment data submission
 
 ---
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            WFM Dashboard                                    │
-│  ┌─────────────────┐    ┌──────────────────┐    ┌────────────────────────┐  │
-│  │ Employee Card   │───▶│ EnrollmentModal  │───▶│ Dashboard Bridge API   │  │
-│  │ (React)         │    │ (React)          │    │ /api/enrollment/*      │  │
-│  └─────────────────┘    └──────────────────┘    └────────────────────────┘  │
-│                                                           │                  │
-│                                                           ▼                  │
-│                                               ┌────────────────────────┐    │
-│                                               │ Employee Profile DB    │    │
-│                                               │ (embedding, status,    │    │
-│                                               │  thumbnail)            │    │
-│                                               └────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                                           │
-                                                           │ Publish
-                                                           ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              IoT Broker                                     │
-│  ┌────────────────────────┐         ┌─────────────────────────────────────┐ │
-│  │ Device Registry        │         │ Enrollment Sync Service             │ │
-│  │ GET /devices           │         │ POST /enrollments/push              │ │
-│  │ - List edge devices    │         │ - Push profiles to selected devices │ │
-│  │ - Filter by capability │         │ - Track sync status per device      │ │
-│  └────────────────────────┘         └─────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                                           │
-                                          ┌────────────────┼────────────────┐
-                                          │                │                │
-                                          ▼                ▼                ▼
-                                   ┌───────────┐    ┌───────────┐    ┌───────────┐
-                                   │ Edge      │    │ Edge      │    │ Edge      │
-                                   │ Device 1  │    │ Device 2  │    │ Device N  │
-                                   │ (Jetson)  │    │ (Jetson)  │    │ (Jetson)  │
-                                   └───────────┘    └───────────┘    └───────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              ENROLLMENT MODAL                                   │
+│                                                                                 │
+│   Part 1          Part 2              Part 3              Part 4                │
+│   ┌─────┐         ┌─────┐             ┌─────┐             ┌─────┐               │
+│   │Open │ ──────▶ │Cap- │ ──────────▶ │Push │ ──────────▶ │Return│              │
+│   │Modal│         │ture │             │to   │             │to    │              │
+│   └──┬──┘         └──┬──┘             │IoT  │             │Bridge│              │
+│      │               │                └──┬──┘             └──┬───┘              │
+└──────┼───────────────┼───────────────────┼───────────────────┼──────────────────┘
+       │               │                   │                   │
+       ▼               ▼                   ▼                   ▼
+┌─────────────┐  ┌───────────────┐  ┌─────────────┐    ┌─────────────────┐
+│ IoT Broker  │  │ DeepFace      │  │ IoT Broker  │    │ Dashboard       │
+│             │  │ Vectorizer    │  │             │    │ Bridge          │
+│ GET devices │  │               │  │ POST push   │    │                 │
+│ GET sync    │  │ POST images   │  │ user_id     │    │ user_id         │
+│ status      │  │ user_id       │  │ embedding   │    │ device_list     │
+│             │  │               │  │ device_list │    │ embedding       │
+│ Returns:    │  │ Returns:      │  │             │    │ thumbnail       │
+│ - devices   │  │ - embedding   │  │ Returns:    │    │ sync_status     │
+│ - sync_stat │  │ - thumbnail   │  │ - user_id   │    │                 │
+└─────────────┘  └───────────────┘  │ - sync_stat │    └─────────────────┘
+                                    │ - devices   │
+                                    └─────────────┘
 ```
+
+---
+
+## Enrollment Status States
+
+### Overview Status (for Bridge)
+
+| Status | Description |
+|--------|-------------|
+| `unenrolled` | No enrollment data exists |
+| `enrolled` | All selected devices successfully synced |
+| `pending:embedding` | Waiting on DeepFace vectorizer (no response) |
+| `pending:iot_confirmation` | Waiting for IoT broker response |
+| `pending:partial` | IoT partial completion (not all devices synced) |
+| `pending:error` | Error occurred, no "complete" from IoT |
+
+### TypeScript Types
+
+```typescript
+type EnrollmentStatus = 
+  | 'unenrolled'
+  | 'enrolled'
+  | 'pending:embedding'
+  | 'pending:iot_confirmation'
+  | 'pending:partial'
+  | 'pending:error';
+
+interface DeviceSyncStatus {
+  device_id: string;
+  display_name: string;
+  status: 'synced' | 'pending' | 'failed';
+  last_sync_at?: string;
+  error?: string;
+}
+
+interface EnrollmentSyncOverview {
+  user_id: string;
+  overview_status: EnrollmentStatus;
+  devices_targeted: number;
+  devices_synced: number;
+  devices_pending: number;
+  devices_failed: number;
+  device_details: DeviceSyncStatus[];
+}
+```
+
+---
+
+## 4-Part Enrollment Flow
+
+### Part 1: Modal Opened (Device Enumeration)
+
+**Flow:** `[IoT Broker] → [Modal]`
+
+When the modal opens, it immediately fetches device list and sync status from the IoT Broker.
+
+```
+Modal Opens
+    │
+    ▼
+GET /api/iot/devices?capability=face_recognition
+GET /api/iot/enrollments/status/{user_id}
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Device Deployment                            │
+│─────────────────────────────────────────────────────────────────│
+│  User: John Doe (EMP123456)                                     │
+│  Current Status: pending:partial                                │
+│                                                                 │
+│  Select devices for facial profile deployment:                  │
+│                                                                 │
+│  ☑️  🟢 cam-001  Lobby Camera           ✅ Synced              │
+│  ☑️  🟢 cam-002  Break Room             ⏳ Pending             │
+│  ☐  🔴 cam-003  Parking (Offline)       ❌ Failed              │
+│  ☐  🟡 dev-001  New Kiosk               ⚪ Not deployed        │
+│                                                                 │
+│  ───────────────────────────────────────────────────           │
+│  [Cancel]  [Start Enrollment]  [Re-enroll All Selected]        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### API: Get Device List with Sync Status
+
+**GET `/api/iot/devices`** - Returns available devices
+
+**GET `/api/iot/enrollments/status/{user_id}`** - Returns sync status per device
+
+**Response:**
+```json
+{
+  "user_id": "EMP123456",
+  "overview_status": "pending:partial",
+  "devices": [
+    {
+      "device_id": "cam-001",
+      "display_name": "Lobby Camera",
+      "device_status": "online",
+      "sync_status": "synced",
+      "last_sync_at": "2026-01-16T10:30:00Z"
+    },
+    {
+      "device_id": "cam-002", 
+      "display_name": "Break Room",
+      "device_status": "online",
+      "sync_status": "pending",
+      "last_sync_at": null
+    },
+    {
+      "device_id": "cam-003",
+      "display_name": "Parking",
+      "device_status": "offline",
+      "sync_status": "failed",
+      "error": "Device unreachable"
+    }
+  ]
+}
+```
+
+---
+
+### Part 2: Enrollment Process (Capture & Vectorize)
+
+**Flow:** `[Modal] → [DeepFace Vectorizer] → [Modal]`
+
+User captures 5 poses, images sent to DeepFace for embedding generation.
+
+```
+Capture Complete (5 images)
+    │
+    ▼
+POST /api/vectorizer/generate
+{
+  "user_id": "EMP123456",
+  "images": [
+    { "pose": "front", "data": "base64..." },
+    { "pose": "left", "data": "base64..." },
+    ...
+  ]
+}
+    │
+    ▼
+Status: pending:embedding (waiting for response)
+    │
+    ▼
+Response from Vectorizer
+{
+  "user_id": "EMP123456",
+  "embedding": "base64_float32_array...",
+  "embedding_dim": 512,
+  "model": "ArcFace",
+  "thumbnail": "base64_jpeg_128x128...",
+  "image_count": 5
+}
+```
+
+**If vectorizer fails/times out:** Status = `pending:embedding`
+
+---
+
+### Part 3: Enrollment Push (Deploy to IoT)
+
+**Flow:** `[Modal] → [IoT Broker] → [Modal]`
+
+Push embedding to selected edge devices via IoT Broker.
+
+```
+Embedding Received
+    │
+    ▼
+POST /api/iot/enrollments/push
+{
+  "user_id": "EMP123456",
+  "embedding": "base64_float32_array...",
+  "embedding_dim": 512,
+  "model": "ArcFace",
+  "target_devices": ["cam-001", "cam-002"]
+}
+    │
+    ▼
+Status: pending:iot_confirmation (waiting for response)
+    │
+    ▼
+Response from IoT Broker
+{
+  "user_id": "EMP123456",
+  "sync_results": [
+    { "device_id": "cam-001", "status": "synced" },
+    { "device_id": "cam-002", "status": "synced" }
+  ],
+  "overview_status": "enrolled"
+}
+```
+
+**Status Outcomes:**
+- All devices synced → `enrolled`
+- Some devices failed → `pending:partial`
+- No response from IoT → `pending:iot_confirmation`
+- Error response → `pending:error`
+
+---
+
+### Part 4: Return to Bridge
+
+**Flow:** `[Modal] → [Dashboard Bridge]`
+
+Modal sends complete enrollment data back to the Dashboard Bridge.
+
+```
+IoT Sync Complete
+    │
+    ▼
+POST /api/bridge/enrollment/complete
+{
+  "user_id": "EMP123456",
+  "device_list": ["cam-001", "cam-002"],
+  "embedding": "base64_float32_array...",
+  "embedding_dim": 512,
+  "model": "ArcFace",
+  "thumbnail": "base64_jpeg_128x128...",
+  "overview_sync_status": "enrolled",
+  "sync_details": [
+    { "device_id": "cam-001", "status": "synced" },
+    { "device_id": "cam-002", "status": "synced" }
+  ]
+}
+    │
+    ▼
+Bridge updates Employee Profile
+Modal closes
+onEnrollmentComplete callback fired
+```
+
+**Bridge Receives:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `user_id` | `string` | Employee ID |
+| `device_list` | `string[]` | Devices targeted for deployment |
+| `embedding` | `string` | Base64 float32 array (512 dims) |
+| `thumbnail` | `string` | Base64 JPEG 128x128 |
+| `overview_sync_status` | `EnrollmentStatus` | Final status |
+| `sync_details` | `DeviceSyncStatus[]` | Per-device results |
 
 ---
 
