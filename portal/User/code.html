@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>QRaie Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet"/>
+<script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#15803d", // Deep Green
+                        "background-light": "#f3f4f6", // Light Gray
+                        "background-dark": "#111827", // Dark Gray/Black
+                        "card-light": "#ffffff",
+                        "card-dark": "#1f2937",
+                        "sidebar-light": "#ffffff",
+                        "sidebar-dark": "#1f2937",
+                    },
+                    fontFamily: {
+                        display: ["Inter", "sans-serif"],
+                        body: ["Inter", "sans-serif"],
+                    },
+                    borderRadius: {
+                        DEFAULT: "0.375rem",
+                    },
+                },
+            },
+        };
+    </script>
+<style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-gray-800 dark:text-gray-100 transition-colors duration-200">
+<div class="flex h-screen overflow-hidden">
+<aside class="w-24 bg-sidebar-light dark:bg-sidebar-dark border-r border-gray-200 dark:border-gray-700 flex flex-col items-center py-6 flex-shrink-0 z-20 shadow-sm hidden md:flex">
+<div class="mb-10 text-primary">
+<span class="material-icons-outlined text-4xl">qr_code_scanner</span>
+</div>
+<nav class="flex-1 w-full space-y-4 px-2">
+<a class="flex flex-col items-center justify-center p-3 rounded-xl text-gray-400 hover:text-primary hover:bg-green-50 dark:hover:bg-gray-800 dark:hover:text-green-400 transition-colors group" href="#">
+<span class="material-icons-outlined text-2xl mb-1 group-hover:scale-110 transition-transform">dashboard</span>
+<span class="text-[10px] font-medium">Dashboard</span>
+</a>
+<a class="flex flex-col items-center justify-center p-3 rounded-xl text-gray-400 hover:text-primary hover:bg-green-50 dark:hover:bg-gray-800 dark:hover:text-green-400 transition-colors group" href="#">
+<span class="material-icons-outlined text-2xl mb-1 group-hover:scale-110 transition-transform">router</span>
+<span class="text-[10px] font-medium">Devices</span>
+</a>
+<a class="flex flex-col items-center justify-center p-3 rounded-xl bg-green-50 dark:bg-green-900/20 text-primary dark:text-green-400 transition-colors group relative" href="#">
+<span class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-primary rounded-r-md"></span>
+<span class="material-icons-outlined text-2xl mb-1 group-hover:scale-110 transition-transform">group</span>
+<span class="text-[10px] font-medium">Users</span>
+</a>
+<a class="flex flex-col items-center justify-center p-3 rounded-xl text-gray-400 hover:text-primary hover:bg-green-50 dark:hover:bg-gray-800 dark:hover:text-green-400 transition-colors group" href="#">
+<span class="material-icons-outlined text-2xl mb-1 group-hover:scale-110 transition-transform">bar_chart</span>
+<span class="text-[10px] font-medium text-center leading-tight">Activity<br/>Logs</span>
+</a>
+<a class="flex flex-col items-center justify-center p-3 rounded-xl text-gray-400 hover:text-primary hover:bg-green-50 dark:hover:bg-gray-800 dark:hover:text-green-400 transition-colors group" href="#">
+<span class="material-icons-outlined text-2xl mb-1 group-hover:scale-110 transition-transform">settings</span>
+<span class="text-[10px] font-medium">Config</span>
+</a>
+</nav>
+</aside>
+<div class="flex-1 flex flex-col min-w-0">
+<header class="h-16 bg-card-light dark:bg-card-dark border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-6 shadow-sm z-10">
+<div class="flex items-center gap-3 md:hidden">
+<button class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+<span class="material-icons-outlined">menu</span>
+</button>
+<div class="flex items-center gap-1 text-primary font-bold text-xl">
+<span class="material-icons-outlined">qr_code_scanner</span>
+<span>QRaie</span>
+</div>
+</div>
+<div class="hidden md:flex items-center gap-2 text-primary">
+<span class="font-display font-bold text-2xl tracking-tight text-[#0f5a28] dark:text-green-400 flex items-center gap-2">
+<span class="material-icons-outlined">hub</span> QRaie
+                    </span>
+</div>
+<div class="flex items-center gap-6 flex-1 justify-end">
+<div class="hidden md:flex items-center max-w-md w-full relative">
+<input class="w-full pl-4 pr-12 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:ring-1 focus:ring-primary focus:border-primary outline-none transition-all placeholder-gray-400" placeholder="Search device" type="text"/>
+<button class="absolute right-0 top-0 bottom-0 px-3 bg-primary hover:bg-green-800 text-white rounded-r flex items-center justify-center transition-colors">
+<span class="material-icons-outlined text-sm">search</span>
+</button>
+</div>
+<div class="flex items-center gap-3 cursor-pointer pl-4 border-l border-gray-200 dark:border-gray-700">
+<div class="h-8 w-8 rounded-full bg-green-200 dark:bg-green-900 text-primary dark:text-green-300 flex items-center justify-center text-xs font-bold">MJ</div>
+<div class="hidden lg:flex items-center gap-2">
+<span class="text-sm font-semibold text-gray-700 dark:text-gray-200">Mary Jones</span>
+<span class="material-icons-outlined text-gray-400 text-lg">expand_more</span>
+</div>
+</div>
+</div>
+</header>
+<main class="flex-1 overflow-y-auto bg-background-light dark:bg-background-dark p-4 md:p-8">
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+<h1 class="text-2xl font-bold text-gray-800 dark:text-white">Registered Users</h1>
+<div class="flex items-center gap-3">
+<div class="flex bg-white dark:bg-gray-800 rounded border border-gray-300 dark:border-gray-600 overflow-hidden">
+<button class="p-2 bg-primary text-white">
+<span class="material-icons-outlined text-xl block">grid_view</span>
+</button>
+<button class="p-2 text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-700 border-l border-gray-300 dark:border-gray-600">
+<span class="material-icons-outlined text-xl block">view_list</span>
+</button>
+</div>
+<button class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-primary text-primary dark:text-green-400 rounded hover:bg-green-50 dark:hover:bg-gray-700 transition-colors">
+<span class="material-icons-outlined text-lg">filter_list</span>
+<span class="font-medium text-sm">Filter</span>
+</button>
+<button class="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-green-800 text-white rounded shadow-sm transition-colors">
+<span class="material-icons-outlined text-lg">add</span>
+<span class="font-medium text-sm">Add User</span>
+</button>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Alex Taylor" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCp_w6Kr90lK7SqaGfvkKfMscncxJWwTdrPyVvjta5jYCj7H-gKITU_i4ep8nvcxf8MCkJsHiHPAAxgkrBdW2c1Ei9p5ZuYsrXikiOTkDyFFyrOHg8u8EjGWflbQNjqG-lHaDZ5m-hmawo9X3YUPWRRPcCiJt4JiFkYH4Yj2Jdw9QuSSdeytw-lvoOvXu0JUKfQQ7HZnR6ujAUCZtLdLAlwq5oiGDnLYenLhDvkyx7rJW-NtM60i8qzBvMRTGVzfmp4Ke5POF8Y5nKU"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Alex Taylor</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">tayloralex@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded border border-green-100 dark:border-green-800">Active</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">AT-0003</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Admin</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">3</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Alex Taylor" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCAbgsZMXwEp-ACoBAblCqJ2iMOIHFCHurNdCQFNCggHPgtVNrv54y9XBF5XzLRkytSw5rT4cDTyH3DEcc5inxpCoR72JAXmU2KllkioNEEQKWO9EYKUWGdlNAcex9ufnZB_G3KJQOmpKi8MXz5rUCULEv-iwb2EpOgRg5MigSREVUjpf_Sh7eAyw-a0Aiw9rpD-YYFQZt3Y82DGKoA8uTL0LgAyEjlRPiwL_54tP0XAYZJ85BDOhQ7IotKUKEnLJklGih7iz5L01tk"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Alex Taylor</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">tayloralex@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-white dark:bg-transparent text-red-500 text-xs font-semibold rounded border border-red-400">Active</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">AT-0003</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Operator</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">3</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Alex Taylor" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC2hAiM8yB8ChjWB6pSQdomPFrehWE1rS_urmP-RZe3j0yI6-YyflwJzzatabHfXRCuVZoUn7tLGzHaxK-RvGKS05OoUgqIg2DbexSUfRKvBu15PxiQ7Rua7MnGzTAnzWB2soMWkXG2jw0gpyB7WrCyFk4v86NA7JfWeDnx4eP9Hkf1pBy00KVvUvAgOP9hHSngSvrCbEruaZ0BoF8MsqZ4oGAMrLcEUmPXN5AVXTExQknPRfiY3yWIlcMzzJnsL3xQj8CQheTG7_jT"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Alex Taylor</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">tayloralex@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded border border-green-100 dark:border-green-800">Active</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">AT-0003</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Operator</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">3</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Maria Lopez" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCJrWFYxX3yh2ImuV6qSAOFQSwsAlsQjWstQoIaKMdif-zBZRx-MS_uWqY9Y36h6oNLSu_EHCDy9q0boPEcBij4YJFa_lmGbjHqndlM-R0hJ2spo6zygLjUvIAPGs-SDFhOCYkS6Oy07nwzaDIblfVRi0uirAraWs6GLQe7IIUWaHEXONPtEjExvkHYSaRZYm6Cl_4mYYauZnyJLx33KuY1JfldXKQj8_Odqag2Vuomeq2m5h_7cQLM5_EqP_6Gey3boqUbbPLgTwN6"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Maria Lopez</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">lopezmaria@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded border border-green-100 dark:border-green-800">Active</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">ML-0017</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Admin</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">2</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Jordan Smith" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB13oOQqysrZZCbjtINeBLJeozgCFl0dn3GLGcRcgbBWafCdoa0Xe3CoQK_P5Q15GIOumk5V5Tmzh9GfjKx5rpOwVefBsTPLQ1AOk9jK5QSsWknb1GIZ9_fuMErGhSGGHg9vuTkMG_TdtjJvXeRSal3_5PnXCyHQyNLqSHRuIyvbe2zADRsQpxzzzzq8bsvXbe2BcJSYYOXYTHXZ6o4KIJXDCDsVs4fpuGi1x-nQk0kiR_dnn0OHqaNQN9ENacZ9RThkjASlh_oKiOT"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Jordan Smith</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">smithjordan@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs font-semibold rounded border border-gray-200 dark:border-gray-600">Inactive</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">JS-0042</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Viewer</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">1</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+<div class="bg-card-light dark:bg-card-dark rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-5 flex flex-col transition-shadow hover:shadow-md">
+<div class="flex justify-between items-start mb-6">
+<div class="flex gap-4">
+<img alt="Alex Taylor" class="w-12 h-12 rounded-full object-cover border-2 border-white dark:border-gray-600 shadow-sm" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDYe4O70apagVG-EJu1D70psySldSHnX1wRWAvReBQmi1Dicvtvkx13ohwO5Cp441mcIZcRZBw-k9xQ6_ggS2Q6wHnfhSmnvh5EvBP0oCGhcVQ4pKVUF36W7VzcuTZ4rVtWf8FqbLyiekcOUcRIKU6_3tLs7mLp3Jzbe-bWuejZQFEy0ev49RpoSTS_t7u46BjOHLeVrnAk0C18UyxznIPiLb9HvSJuAC59aV_srGczMr3Jz46oBdrOJbHuaT_Td8kl6SAASWwp4q7P"/>
+<div>
+<h3 class="text-base font-bold text-gray-900 dark:text-white">Alex Taylor</h3>
+<p class="text-xs text-gray-500 dark:text-gray-400">tayloralex@mail.com</p>
+</div>
+</div>
+<span class="px-3 py-1 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-semibold rounded border border-green-100 dark:border-green-800">Active</span>
+</div>
+<div class="grid grid-cols-3 gap-4 mb-6">
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Employee ID</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">AT-0003</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Role</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">Operator</p>
+</div>
+<div>
+<p class="text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold mb-1">Assigned Devices</p>
+<p class="text-sm font-medium text-gray-800 dark:text-gray-200">3</p>
+</div>
+</div>
+<div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-6 items-center">
+<button class="flex items-center gap-2 text-xs font-medium text-gray-400 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300 transition-colors">
+<span class="material-icons-outlined text-sm">edit</span>
+<span>Edit</span>
+</button>
+<button class="flex items-center gap-2 text-xs font-medium text-green-600 hover:text-green-700 dark:text-green-500 dark:hover:text-green-400 transition-colors">
+<span class="material-icons-outlined text-sm">visibility</span>
+<span>View Details</span>
+</button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</div>
+</body></html>
