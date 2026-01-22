@@ -104,3 +104,7 @@ temp/
 # Exclude diffusion model specific documentation
 PIPELINE_README.md
 video_analysis/PIPELINE_README.md
+
+# Backup files
+*.bak
+**/*.bak
