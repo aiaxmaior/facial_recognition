@@ -344,22 +344,8 @@ audio_player = AudioPlayer()
 class GuidedEnrollmentCapture:
     """Handles camera capture with MediaPipe face mesh and auto-detection."""
     
-    def __init__(self, camera_index=0, camera_ip=None, port = 554, stream = "sub", user = "admin", password = "Fanatec2025"):
+    def __init__(self, camera_index=0):
         self.camera_index = camera_index
-        self.camera_ip = camera_ip
-        self.port = port
-        self.stream = stream
-        self.user = user
-        self.password = password
-        
-        # Construct RTSP URL from components if camera_ip is provided
-        if self.camera_ip:
-            if stream == "sub":
-                self.rtsp_url = f"rtsp://{self.user}:{self.password}@{self.camera_ip}/Preview_01_sub"
-            elif stream == "main":
-                self.rtsp_url = f"rtsp://{self.user}:{self.password}@{self.camera_ip}:{self.port}"
-        else:
-            self.rtsp_url = None
         self.cap = None
         self.running = False
         self.camera_ready = False
@@ -392,10 +378,6 @@ class GuidedEnrollmentCapture:
         
         # Capture state
         self.user_name = ""
-        self.first_name = ""
-        self.last_name = ""
-        self.employee_id = ""
-        self.email = ""
         self.current_step = 0
         self.captured_frames = []
         self.countdown_active = False
@@ -425,7 +407,7 @@ class GuidedEnrollmentCapture:
         # Advisory audio state (rate-limited guidance)
         self.last_advisory_audio_time = 0      # Timestamp of last advisory audio
         self.advisory_audio_count = 0          # Count of audio prompts this capture
-        self.advisory_audio_interval = 3.0     # Seconds between audio prompts
+        self.advisory_audio_interval = 4.0     # Seconds between audio prompts
         self.advisory_audio_max = 5            # Max prompts per capture (10 seconds total)
         
         # Stability tracking for countdown trigger
@@ -454,30 +436,14 @@ class GuidedEnrollmentCapture:
         """Start camera capture thread."""
         if self.running:
             return
-
+        
         # Initialize MediaPipe on first camera start (deferred for Jetson performance)
         self._init_mediapipe()
-        if self.camera_ip:
-            # Use GStreamer wrapper for RTSP to match DeepStream recognition pipeline
-            if GSTREAMER_AVAILABLE:
-                logger.info(f"Opening RTSP via GStreamer (DeepStream-compatible): {self.rtsp_url}")
-                self.cap = GStreamerCamera(self.rtsp_url, width=640, height=480)
-                self.cap.open()
-            else:
-                # Fallback to FFmpeg (may have color issues)
-                logger.warning(f"GStreamer wrapper not available, using FFmpeg (color may mismatch DeepStream)")
-                logger.info(f"Opening RTSP stream via FFmpeg: {self.rtsp_url}")
-                self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('B','G','R','3'))
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.cap.set(cv2.CAP_PROP_FPS, 60)
-        else:
-            self.cap = cv2.VideoCapture(self.camera_index)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 60)
+        
+        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 60)
         
         if not self.cap.isOpened():
             return False
@@ -510,13 +476,6 @@ class GuidedEnrollmentCapture:
         self.completion_time = 0
         self.enrollment_result = ""
         
-        # Reset user info
-        self.user_name = ""
-        self.first_name = ""
-        self.last_name = ""
-        self.employee_id = ""
-        self.email = ""
-        
         # Reset audio state
         self.last_step_audio_played = -1
         self.hold_audio_played = False
@@ -530,15 +489,9 @@ class GuidedEnrollmentCapture:
         # Reset stability tracking
         self.stable_frame_count = 0
 
-    def set_user_info(self, first_name, last_name, employee_id, email):
-        """Set the user info for enrollment."""
-        self.first_name = first_name.strip()
-        self.last_name = last_name.strip()
-        self.employee_id = employee_id.strip()
-        self.email = email.strip()
-        # Create display name from first and last name
-        full_name = f"{self.first_name} {self.last_name}"
-        self.user_name = full_name.replace(" ", "_")
+    def set_user_name(self, name):
+        """Set the user name for enrollment."""
+        self.user_name = name.strip().replace(" ", "_")
 
     def _put_text_outlined(self, frame, text, pos, font, scale, color, thickness):
         """Draw text with outline for visibility."""
@@ -569,14 +522,14 @@ class GuidedEnrollmentCapture:
         process_every_n = 2  # Only process every Nth frame (reduces CPU by ~50%)
         target_fps = 15  # Target processing FPS
         frame_time = 1.0 / target_fps
-
+        
         while self.running and self.cap.isOpened():
             loop_start = time.time()
-
+            
             ret, frame = self.cap.read()
             if not ret:
                 continue
-
+            
             frame_count += 1
 
             # Debug: Log first frame to verify color format
