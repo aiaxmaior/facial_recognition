@@ -3,7 +3,7 @@
 Video Preprocessor for Training Data
 =====================================
 
-Standardizes videos to a consistent format for LTX-2/WAN training:
+Standardizes videos to a consistent format for VLM and downstream model processing:
 - Resolution: 960x544 (preserves aspect ratio, center-crops if needed)
 - Codec: H.264 (libx264), CRF 18
 - Frame rate: 25 fps
@@ -29,7 +29,7 @@ from tqdm import tqdm
 # CONFIGURATION
 # =============================================================================
 
-# Target output specifications (per plan: LTX-2 compatible)
+# Target output specifications for VLM analysis
 TARGET_WIDTH = 960
 TARGET_HEIGHT = 544
 TARGET_FPS = 25
@@ -331,7 +331,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Preprocess videos for LTX-2/WAN training",
+        description="Preprocess videos for VLM analysis and downstream processing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

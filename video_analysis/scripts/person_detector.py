@@ -41,8 +41,8 @@ FRAME_SAMPLE_RATE = 5  # Process every Nth frame
 MIN_CONFIDENCE = 0.3   # Minimum detection confidence
 MIN_COVERAGE = 0.60    # Minimum % of frames with person detected
 
-# YOLO model path (use existing model in Lora suite)
-YOLO_MODEL_PATH = Path(__file__).parent.parent.parent / "Lora/lora_trainer_suite/yolov8m.pt"
+# YOLO model path (will download default if not found)
+YOLO_MODEL_PATH = Path(__file__).parent / "yolov8m.pt"
 
 # Scene detection parameters
 MIN_SCENE_LENGTH = "2s"  # Minimum scene length (50 frames at 25fps)
