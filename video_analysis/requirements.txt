@@ -1,0 +1,36 @@
+# Video Dataset Preprocessing Pipeline Requirements
+# ================================================
+# Last updated: 2026-01-22
+
+# Video Processing
+av>=10.0.0                    # PyAV for video I/O
+scenedetect[opencv]>=0.6.0    # Scene detection
+
+# Object Detection
+ultralytics>=8.0.0            # YOLOv8
+
+# Emotion Recognition
+deepface>=0.0.90              # Face analysis + emotion detection
+# Note: py-feat has numpy conflicts with Python 3.12
+
+# NLP & Embeddings
+sentence-transformers>=5.0.0  # Sentence embeddings
+
+# Clustering & Dimensionality Reduction
+hdbscan>=0.8.29               # Density-based clustering
+umap-learn>=0.5.0             # UMAP dimensionality reduction
+scikit-learn>=1.0.0           # General ML utilities
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+plotly>=5.0.0                 # Interactive 3D plots
+
+# Utilities
+tqdm>=4.64.0                  # Progress bars
+pandas>=1.5.0                 # Data manipulation
+numpy>=1.21.0                 # Numerical operations
+
+# Jupyter
+jupyter>=1.0.0
+ipywidgets>=8.0.0             # Interactive widgets
