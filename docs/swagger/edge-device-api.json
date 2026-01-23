@@ -1,0 +1,1546 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Edge Device Communication API",
+    "description": "API specification for Edge Device (Jetson Orin Nano) communication with the \nIoT Broker and Archive Server in the Facial Recognition System.\n\n## Overview\n\nThis specification covers:\n- **Edge \u2192 IoT Broker**: Event submission, heartbeat, enrollment sync\n- **IoT Broker \u2192 Edge**: WebSocket protocol (documented as x-websocket extension)\n- **Edge \u2192 Archive Server**: Video clip upload, log batch shipping\n\n## URL Structure\n\nProduction URL pattern:\n```\nhttps://{tenant}-bridge.qryde.net/iot-broker/api/data/...\n```\n\nExample: `https://acetaxi-bridge.qryde.net/iot-broker/api/data/devices`\n\n## Device Authentication\n\nEdge devices authenticate using:\n- `X-Device-ID` header: Unique device identifier\n- `Authorization: Bearer {token}`: Device JWT token (optional for some endpoints)\n",
+    "version": "1.1.0",
+    "contact": {
+      "name": "API Support"
+    },
+    "license": {
+      "name": "Proprietary"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://{tenant}-bridge.qryde.net/iot-broker/api",
+      "description": "IoT Broker Production (Multi-tenant)",
+      "variables": {
+        "tenant": {
+          "default": "acetaxi",
+          "description": "Tenant identifier",
+          "enum": [
+            "acetaxi",
+            "hbss",
+            "amrtr"
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://localhost:3001",
+      "description": "Local Development - Data Service"
+    },
+    {
+      "url": "https://archive.qryde.net/api/archive",
+      "description": "Archive Server (placeholder)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Devices",
+      "description": "Device registration and management"
+    },
+    {
+      "name": "Events",
+      "description": "Event submission from edge devices"
+    },
+    {
+      "name": "Heartbeat",
+      "description": "Device status and health reporting"
+    },
+    {
+      "name": "Enrollment Sync",
+      "description": "Pull-based enrollment synchronization"
+    },
+    {
+      "name": "Archive - Clips",
+      "description": "Video clip upload to archive server"
+    },
+    {
+      "name": "Archive - Logs",
+      "description": "Log batch shipping to archive server"
+    },
+    {
+      "name": "WebSocket",
+      "description": "WebSocket protocol documentation (not REST endpoints).\nSee x-websocket extension for message schemas.\n"
+    }
+  ],
+  "paths": {
+    "/data/devices": {
+      "get": {
+        "tags": [
+          "Devices"
+        ],
+        "summary": "Get all devices",
+        "description": "Retrieve a list of all registered devices for the tenant.\n\nCan filter by device capability type.\n",
+        "operationId": "getDevices",
+        "parameters": [
+          {
+            "name": "device-type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by device capability",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "face_recognition",
+                "emotion_monitoring"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                },
+                "example": [
+                  {
+                    "_id": "69709480c2011cbe0cc33a86",
+                    "device_id": "cam-001",
+                    "display_name": "Lobby Camera",
+                    "location_label": "Main Entrance",
+                    "capability": "face_recognition",
+                    "status": "online",
+                    "device_category": "camera",
+                    "last_heartbeat_at": "2026-01-22T19:41:06.996Z",
+                    "created_at": "2026-01-21T08:55:28.595Z",
+                    "updated_at": "2026-01-22T19:41:06.996Z"
+                  }
+                ]
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Devices"
+        ],
+        "summary": "Register a new device",
+        "description": "Register a new IoT edge device.\n\n**Required fields:** device_id, display_name, capability\n\nAfter registration, send heartbeats to update status to \"online\".\n",
+        "operationId": "registerDevice",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegistration"
+              },
+              "example": {
+                "device_id": "jetson-001",
+                "display_name": "Jetson Orin Nano - Lobby",
+                "location_label": "Main Entrance",
+                "capability": "face_recognition",
+                "status": "provisioning",
+                "device_category": "camera"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Device registered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "Device already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/data/devices/{deviceId}": {
+      "get": {
+        "tags": [
+          "Devices"
+        ],
+        "summary": "Get device by ID",
+        "description": "Retrieve a specific device by its device ID.",
+        "operationId": "getDeviceById",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdPath"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Devices"
+        ],
+        "summary": "Update device",
+        "description": "Update device information.",
+        "operationId": "updateDevice",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Device updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/data/devices/{deviceId}/heartbeat": {
+      "post": {
+        "tags": [
+          "Heartbeat"
+        ],
+        "summary": "Send device heartbeat",
+        "description": "Update device heartbeat timestamp and status.\n\nShould be called every 30 seconds.\n\nResponse may indicate if configuration or enrollment updates are available.\n",
+        "operationId": "sendHeartbeat",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatRequest"
+              },
+              "example": {
+                "timestamp": "2026-01-22T10:30:00Z",
+                "status": "operational",
+                "metrics": {
+                  "cpu_percent": 45.2,
+                  "memory_percent": 62.1,
+                  "temperature_c": 52.0
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Heartbeat received",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/data/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Get events",
+        "description": "Retrieve events with optional filtering.",
+        "operationId": "getEvents",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "face_recognition",
+                "emotion_monitoring"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StoredEvent"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Submit event",
+        "description": "Submit a recognition or emotion event.\n\nFor batched submission, see the batch endpoint.\n",
+        "operationId": "createEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventSubmission"
+              },
+              "example": {
+                "device_id": "cam-001",
+                "event_type": "face_recognition",
+                "person_name": "John Doe",
+                "person_id": "EMP123456",
+                "metadata": {
+                  "distance": 0.28,
+                  "confidence": 0.72,
+                  "inference_ms": 42
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Event created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/data/enrollment/publish": {
+      "post": {
+        "tags": [
+          "Enrollment Sync"
+        ],
+        "summary": "Publish enrollment to devices",
+        "description": "Publishes employee enrollment data (facial embedding) to all face recognition devices.\n\n**How it works:**\n1. Accepts only employee_id in the request body\n2. Retrieves enrollment record from database (including embedded_file)\n3. Validates that embedded_file exists\n4. Sends employee_id AND embedded_file to all face recognition devices via WebSocket\n",
+        "operationId": "publishEnrollment",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "employee_id"
+                ],
+                "properties": {
+                  "employee_id": {
+                    "type": "string",
+                    "description": "Employee/Person ID to publish",
+                    "example": "EMP123456"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Enrollment published to devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "employee_id": {
+                          "type": "string"
+                        },
+                        "devices_notified": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "description": "Employee enrollment not found or embedded_file missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/data/enrollments/sync": {
+      "get": {
+        "tags": [
+          "Enrollment Sync"
+        ],
+        "summary": "Request enrollment sync",
+        "description": "Pull enrollment updates since a known version.\n\nReturns incremental updates (additions and removals) unless `force_full=true`.\n",
+        "operationId": "syncEnrollments",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdHeader"
+          },
+          {
+            "name": "device_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "cam-001"
+            }
+          },
+          {
+            "name": "since_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "ArcFace"
+            }
+          },
+          {
+            "name": "force_full",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sync data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/archive/clips": {
+      "post": {
+        "tags": [
+          "Archive - Clips"
+        ],
+        "summary": "Upload video clip",
+        "description": "Upload event-triggered video clip with metadata.\n\n**Clip Specifications:**\n- Duration: 15 seconds (10s pre-event + 5s post-event)\n- Codec: H.265 (preferred) or H.264\n- Max size: 10 MB\n",
+        "operationId": "uploadClip",
+        "servers": [
+          {
+            "url": "https://archive.qryde.net/api"
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TenantIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "metadata",
+                  "file"
+                ],
+                "properties": {
+                  "metadata": {
+                    "$ref": "#/components/schemas/ClipMetadata"
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Clip uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClipUploadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "413": {
+            "description": "File too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/archive/logs": {
+      "post": {
+        "tags": [
+          "Archive - Logs"
+        ],
+        "summary": "Upload log batch",
+        "description": "Upload batched log entries for archival.\n\n**Batching:** 100 entries OR 30 seconds OR 500 KB\n\n**Compression:** gzip recommended\n",
+        "operationId": "uploadLogs",
+        "servers": [
+          {
+            "url": "https://archive.qryde.net/api"
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeviceIdHeader"
+          },
+          {
+            "$ref": "#/components/parameters/TenantIdHeader"
+          },
+          {
+            "name": "Content-Encoding",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "gzip",
+                "identity"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogBatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logs accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogBatchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "x-websocket": {
+    "endpoint": "wss://{tenant}-bridge.qryde.net/iot-broker/ws/device",
+    "description": "Real-time bidirectional communication between IoT Broker and Edge Devices.\n\n## Connection\n```\nwss://acetaxi-bridge.qryde.net/iot-broker/ws/device?device_id=cam-001&token={token}\n```\n\n## Message Types\n- `register` - Device registration on connect\n- `registered` - Registration acknowledgment  \n- `enrollment_update` - New/updated enrollment with embedded_file\n- `enrollment_delete` - Remove enrollment\n- `command` - Device commands (restart, config update)\n- `ack` - Message acknowledgment\n- `ping`/`pong` - Keep-alive\n",
+    "messages": {
+      "register": {
+        "direction": "edge_to_broker",
+        "schema": {
+          "$ref": "#/components/schemas/WsRegisterMessage"
+        }
+      },
+      "enrollment_update": {
+        "direction": "broker_to_edge",
+        "schema": {
+          "$ref": "#/components/schemas/WsEnrollmentUpdateMessage"
+        }
+      },
+      "command": {
+        "direction": "broker_to_edge",
+        "schema": {
+          "$ref": "#/components/schemas/WsCommandMessage"
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "DeviceIdPath": {
+        "name": "deviceId",
+        "in": "path",
+        "required": true,
+        "description": "Unique device identifier",
+        "schema": {
+          "type": "string",
+          "example": "cam-001"
+        }
+      },
+      "DeviceIdHeader": {
+        "name": "X-Device-ID",
+        "in": "header",
+        "required": false,
+        "description": "Device identifier",
+        "schema": {
+          "type": "string",
+          "example": "cam-001"
+        }
+      },
+      "TenantIdHeader": {
+        "name": "X-Tenant-ID",
+        "in": "header",
+        "required": false,
+        "description": "Tenant identifier",
+        "schema": {
+          "type": "string",
+          "example": "acetaxi"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Device": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string",
+            "description": "MongoDB ObjectId",
+            "example": "69709480c2011cbe0cc33a86"
+          },
+          "device_id": {
+            "type": "string",
+            "example": "cam-001"
+          },
+          "display_name": {
+            "type": "string",
+            "example": "Lobby Camera"
+          },
+          "location_label": {
+            "type": "string",
+            "example": "Main Entrance"
+          },
+          "capability": {
+            "type": "string",
+            "enum": [
+              "face_recognition",
+              "emotion_monitoring"
+            ],
+            "example": "face_recognition"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "online",
+              "offline"
+            ],
+            "example": "online"
+          },
+          "device_category": {
+            "type": "string",
+            "example": "camera"
+          },
+          "last_heartbeat_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "DeviceRegistration": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "display_name",
+          "capability"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "description": "Unique device identifier",
+            "example": "jetson-001"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable name",
+            "example": "Jetson Orin Nano - Lobby"
+          },
+          "location_label": {
+            "type": "string",
+            "example": "Main Entrance"
+          },
+          "capability": {
+            "type": "string",
+            "enum": [
+              "face_recognition",
+              "emotion_monitoring"
+            ],
+            "example": "face_recognition"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "online",
+              "offline"
+            ],
+            "default": "provisioning"
+          },
+          "device_category": {
+            "type": "string",
+            "example": "camera"
+          }
+        }
+      },
+      "DeviceUpdate": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "location_label": {
+            "type": "string"
+          },
+          "capability": {
+            "type": "string",
+            "enum": [
+              "face_recognition",
+              "emotion_monitoring"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "online",
+              "offline"
+            ]
+          }
+        }
+      },
+      "HeartbeatRequest": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "operational",
+              "degraded",
+              "error"
+            ],
+            "default": "operational"
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "cpu_percent": {
+                "type": "number"
+              },
+              "memory_percent": {
+                "type": "number"
+              },
+              "gpu_memory_mb": {
+                "type": "integer"
+              },
+              "temperature_c": {
+                "type": "number"
+              },
+              "disk_percent": {
+                "type": "number"
+              },
+              "uptime_seconds": {
+                "type": "integer"
+              }
+            }
+          },
+          "cv_stats": {
+            "type": "object",
+            "properties": {
+              "fps_current": {
+                "type": "number"
+              },
+              "frames_processed": {
+                "type": "integer"
+              },
+              "detections_count": {
+                "type": "integer"
+              },
+              "recognitions_count": {
+                "type": "integer"
+              },
+              "avg_inference_ms": {
+                "type": "number"
+              }
+            }
+          },
+          "sync_status": {
+            "type": "object",
+            "properties": {
+              "enrollment_version": {
+                "type": "integer"
+              },
+              "enrolled_count": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "HeartbeatResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "last_heartbeat_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "config_update_available": {
+            "type": "boolean"
+          },
+          "enrollment_version": {
+            "type": "integer"
+          }
+        }
+      },
+      "EventSubmission": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "event_type"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "example": "cam-001"
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "face_recognition",
+              "emotion_monitoring"
+            ]
+          },
+          "person_name": {
+            "type": "string",
+            "description": "Required for face_recognition"
+          },
+          "person_id": {
+            "type": "string",
+            "description": "Employee ID"
+          },
+          "emotion_code": {
+            "type": "string",
+            "description": "Required for emotion_monitoring"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "event_timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "StoredEvent": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "person_name": {
+            "type": "string"
+          },
+          "person_id": {
+            "type": "string"
+          },
+          "emotion_code": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "event_timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "EventResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          }
+        }
+      },
+      "EnrollmentRecord": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "embedding": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64-encoded Float32 embedding"
+          },
+          "dim": {
+            "type": "integer",
+            "example": 512
+          },
+          "model": {
+            "type": "string",
+            "example": "ArcFace"
+          },
+          "display_name": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncResponse": {
+        "type": "object",
+        "properties": {
+          "sync_version": {
+            "type": "integer"
+          },
+          "total_enrolled": {
+            "type": "integer"
+          },
+          "additions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnrollmentRecord"
+            }
+          },
+          "removals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "full_sync_required": {
+            "type": "boolean"
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ClipMetadata": {
+        "type": "object",
+        "required": [
+          "clip_id",
+          "device_id",
+          "event_id",
+          "capture_time"
+        ],
+        "properties": {
+          "clip_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "capture_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "example": 15
+          },
+          "pre_event_seconds": {
+            "type": "integer",
+            "example": 10
+          },
+          "post_event_seconds": {
+            "type": "integer",
+            "example": 5
+          },
+          "codec": {
+            "type": "string",
+            "enum": [
+              "h264",
+              "h265"
+            ]
+          },
+          "resolution": {
+            "type": "string",
+            "example": "1280x720"
+          },
+          "fps": {
+            "type": "integer",
+            "example": 25
+          },
+          "file_size_bytes": {
+            "type": "integer"
+          },
+          "checksum_sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "ClipUploadResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "clip_id": {
+            "type": "string"
+          },
+          "storage_path": {
+            "type": "string"
+          },
+          "retention_days": {
+            "type": "integer"
+          }
+        }
+      },
+      "LogEntry": {
+        "type": "object",
+        "required": [
+          "seq",
+          "ts",
+          "level",
+          "logger",
+          "message"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "DEBUG",
+              "INFO",
+              "WARNING",
+              "ERROR",
+              "CRITICAL"
+            ]
+          },
+          "logger": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "detection",
+              "recognition",
+              "validator",
+              "iot_client",
+              "sync",
+              "buffer",
+              "archive",
+              "system"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "LogBatchRequest": {
+        "type": "object",
+        "required": [
+          "batch_id",
+          "device_id",
+          "logs"
+        ],
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "batch_info": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer"
+              },
+              "first_timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "last_timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sequence_start": {
+                "type": "integer"
+              },
+              "sequence_end": {
+                "type": "integer"
+              },
+              "compressed": {
+                "type": "boolean"
+              }
+            }
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            }
+          }
+        }
+      },
+      "LogBatchResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "batch_id": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "integer"
+          },
+          "last_sequence": {
+            "type": "integer"
+          },
+          "next_expected": {
+            "type": "integer"
+          }
+        }
+      },
+      "WsRegisterMessage": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "register"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "device_id": {
+                "type": "string"
+              },
+              "device_type": {
+                "type": "string"
+              },
+              "capability": {
+                "type": "string"
+              },
+              "firmware_version": {
+                "type": "string"
+              },
+              "enrollment_version": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "WsEnrollmentUpdateMessage": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "enrollment_update"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "require_ack": {
+            "type": "boolean"
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "upsert"
+                ]
+              },
+              "employee_id": {
+                "type": "string"
+              },
+              "person_name": {
+                "type": "string"
+              },
+              "embedded_file": {
+                "type": "string",
+                "format": "byte"
+              },
+              "embedding_dim": {
+                "type": "integer"
+              },
+              "model": {
+                "type": "string"
+              },
+              "enrollment_version": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "WsCommandMessage": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "command"
+            ]
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "require_ack": {
+            "type": "boolean"
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "enum": [
+                  "restart_recognition",
+                  "reload_config",
+                  "force_sync",
+                  "capture_diagnostic",
+                  "set_log_level"
+                ]
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "DeviceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "DeviceHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Device-ID"
+      }
+    }
+  }
+}
