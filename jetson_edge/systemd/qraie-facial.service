@@ -1,0 +1,46 @@
+[Unit]
+Description=QRaie Facial Recognition Service
+Documentation=https://github.com/qraie/facial_recognition
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=qraie
+Group=qraie
+WorkingDirectory=/opt/qraie/facial_recognition
+
+# Environment
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=CONFIG_PATH=/opt/qraie/config/device_config.json
+Environment=PYTHONUNBUFFERED=1
+
+# Execution
+ExecStartPre=/bin/sleep 10
+ExecStart=/opt/qraie/facial_recognition/venv/bin/python main.py --config /opt/qraie/config/device_config.json
+
+# Restart policy
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qraie/data /opt/qraie/logs /tmp
+PrivateTmp=true
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=80%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qraie-facial
+
+[Install]
+WantedBy=multi-user.target

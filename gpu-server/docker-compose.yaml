@@ -1,0 +1,56 @@
+# GPU Server Docker Compose
+# For development and testing
+
+version: '3.8'
+
+services:
+  gpu-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gpu-server
+    ports:
+      - "5000:5000"
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - DEV_MODE=false
+      # Graylog (optional)
+      - GRAYLOG_HOST=
+      - GRAYLOG_PORT=12201
+      # Use GPU 1 (secondary) - change to "0" for primary
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=1
+    volumes:
+      # Mount config file
+      - ./config.yaml:/app/config.yaml:ro
+      # Mount models directory (for custom models)
+      - ./models:/models:ro
+      # Mount for development (hot reload)
+      # - ./app:/app/app:ro
+    # GPU support (requires nvidia-docker)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]  # Specifically use GPU 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Optional: Redis for caching embeddings
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: gpu-server-redis
+  #   ports:
+  #     - "6380:6379"
+  #   volumes:
+  #     - redis-data:/data
+
+# volumes:
+#   redis-data:
