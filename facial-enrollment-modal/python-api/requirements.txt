@@ -1,0 +1,7 @@
+# Python API requirements
+flask>=2.0.0
+flask-cors>=4.0.0
+numpy>=1.21.0
+opencv-python>=4.5.0
+deepface>=0.0.79
+tf-keras>=2.15.0

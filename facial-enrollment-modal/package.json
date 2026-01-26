@@ -1,0 +1,25 @@
+{
+  "name": "facial-enrollment-modal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Facial enrollment modal system for WFM dashboard integration",
+  "workspaces": [
+    "packages/*",
+    "demo"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:demo\"",
+    "dev:api": "npm run dev -w @qryde/enrollment-api",
+    "dev:demo": "npm run dev -w demo",
+    "build": "npm run build -w @qryde/facial-enrollment && npm run build -w @qryde/enrollment-api",
+    "build:component": "npm run build -w @qryde/facial-enrollment",
+    "lint": "eslint packages/*/src demo/src --ext .ts,.tsx"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.3.3",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0"
+  }
+}
