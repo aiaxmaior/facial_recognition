@@ -22,8 +22,10 @@ Usage:
     # In main loop:
     buffer.add_frame(frame)
     
-    # On event:
-    clip_path = buffer.capture_event_clip(event_id)
+    # On event (event_id should be device_id + event_id):
+    clip_event_id = f"{device_id}_{event_id}"
+    clip_path = buffer.capture_event_clip(clip_event_id)
+    # Output: /opt/qraie/data/video_buffer/cam-001_EV1-1234567890-abc12345.mp4
     
     # Cleanup:
     buffer.stop()
@@ -39,7 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Deque, Tuple
+from typing import Optional, Deque, Tuple, Callable
 
 import cv2
 import numpy as np
@@ -119,6 +121,9 @@ class VideoRingBuffer:
         self._pending_captures: list = []  # (event_id, trigger_time, frames_remaining)
         self._capture_thread: Optional[threading.Thread] = None
         
+        # Callback when clip is ready: fn(event_id: str, clip_path: str) -> None
+        self.on_clip_ready: Optional[Callable[[str, str], None]] = None
+        
         # Statistics
         self.stats = {
             "frames_added": 0,
@@ -197,7 +202,9 @@ class VideoRingBuffer:
         after the trigger point. Post-event frames are collected asynchronously.
         
         Args:
-            event_id: Unique event identifier for the clip filename
+            event_id: Unique event identifier for the clip filename.
+                      Should be formatted as {device_id}_{event_id} 
+                      (e.g., "cam-001_EV1-1234567890-abc12345")
             delay_frames: Override post-event frame count
             
         Returns:
@@ -211,9 +218,8 @@ class VideoRingBuffer:
         # Queue capture (will be processed when post-event frames collected)
         self._pending_captures.append((event_id, trigger_time, delay_frames))
         
-        # Generate expected clip path
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clip_filename = f"clip_{event_id}_{timestamp_str}.mp4"
+        # Generate expected clip path (event_id should be device_id + event_id)
+        clip_filename = f"{event_id}.mp4"
         clip_path = self.buffer_path / clip_filename
         
         logger.info(f"Queued clip capture: {event_id}, post-frames={delay_frames}")
@@ -281,9 +287,8 @@ class VideoRingBuffer:
                 logger.warning(f"Insufficient frames for clip {event_id}: {len(clip_frames)}")
                 return None
             
-            # Generate clip
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            clip_filename = f"clip_{event_id}_{timestamp_str}.mp4"
+            # Generate clip (event_id should be device_id + event_id)
+            clip_filename = f"{event_id}.mp4"
             clip_path = self.buffer_path / clip_filename
             
             # Encode frames to video
@@ -297,6 +302,13 @@ class VideoRingBuffer:
                 
                 # Cleanup old clips if needed
                 self._cleanup_old_clips()
+                
+                # Invoke callback if registered
+                if self.on_clip_ready:
+                    try:
+                        self.on_clip_ready(event_id, str(clip_path))
+                    except Exception as cb_err:
+                        logger.error(f"Clip ready callback failed: {cb_err}")
                 
                 return str(clip_path)
             else:
@@ -458,7 +470,7 @@ class VideoRingBuffer:
         """Remove old clips if storage limits exceeded."""
         try:
             clips = sorted(
-                self.buffer_path.glob("clip_*.mp4"),
+                self.buffer_path.glob("*.mp4"),
                 key=lambda p: p.stat().st_mtime
             )
             
@@ -499,7 +511,7 @@ class VideoRingBuffer:
     def get_clip_list(self) -> list:
         """Get list of saved clips."""
         clips = []
-        for clip_path in self.buffer_path.glob("clip_*.mp4"):
+        for clip_path in self.buffer_path.glob("*.mp4"):
             stat = clip_path.stat()
             clips.append({
                 "filename": clip_path.name,

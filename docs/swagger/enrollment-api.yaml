@@ -1,0 +1,1001 @@
+openapi: 3.0.3
+info:
+  title: Facial Enrollment System API
+  description: |
+    API specification for the Facial Enrollment System, covering:
+    - IoT Broker Data Service (device management, enrollment publishing)
+    - Facial Enrollment Modal (embedded in Bridge server)
+    - GPU Vectorizer API (embedding generation)
+    
+    ## System Architecture
+    
+    ```
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                          BRIDGE SERVER                                   │
+    │  ┌───────────────────────────────────────────────────────────────────┐  │
+    │  │                    Facial Enrollment Modal                         │  │
+    │  │  (React Frontend + Node.js API Server)                            │  │
+    │  │                                                                    │  │
+    │  │  Receives:                                                         │  │
+    │  │    ← POST from Employee Management Web Page (opens modal)          │  │
+    │  │                                                                    │  │
+    │  │  Sends:                                                            │  │
+    │  │    → IoT Broker: Publish enrollment to edge devices                │  │
+    │  │    → GPU Server: Generate embeddings & VLM analysis                │  │
+    │  └───────────────────────────────────────────────────────────────────┘  │
+    └─────────────────────────────────────────────────────────────────────────┘
+                │                                        │
+                │ POST /api/data/enrollment/publish      │ POST /api/vectorizer/generate
+                ▼                                        ▼
+    ┌─────────────────────┐                  ┌─────────────────────┐
+    │    IoT Broker       │                  │    GPU Server       │
+    │  (Data Service)     │                  │   (AWS/Vectorizer)  │
+    │                     │                  │                     │
+    │  - Device Registry  │                  │  - ArcFace Embeddings│
+    │  - WebSocket Broadcast                 │  - VLM Story Gen    │
+    │  - Event Storage    │                  │  - Thumbnail Gen    │
+    └─────────────────────┘                  └─────────────────────┘
+                │
+                │ WebSocket (enrollment_update)
+                ▼
+    ┌─────────────────────┐
+    │   Edge Devices      │
+    │  (Jetson Orin Nano) │
+    │                     │
+    │  - Face Recognition │
+    │  - Emotion Analysis │
+    │  - Video Capture    │
+    └─────────────────────┘
+    ```
+    
+    ## Modal Integration with Bridge
+    
+    The **Facial Enrollment Modal** is embedded directly within the Bridge server, NOT a separate service.
+    
+    ### How it works:
+    
+    1. **User opens Employee Management page** in the WFM Dashboard
+    2. **User clicks "Enroll Face"** → Bridge renders the Modal component
+    3. **Modal captures images** from user's webcam (5 poses: front, left, right, up, down)
+    4. **Modal sends images to GPU Server** → Receives embedding + thumbnail
+    5. **Modal publishes to IoT Broker** → Broker broadcasts to edge devices via WebSocket
+    6. **Modal stores enrollment** in Bridge database for employee profile
+    
+    ### API Endpoints (Modal Perspective):
+    
+    | Direction | Endpoint | Purpose |
+    |-----------|----------|---------|
+    | **Inbound (receives)** | `POST /api/enrollment/capture` | Images from webcam |
+    | **Outbound (sends)** | `POST /api/vectorizer/generate` | To GPU Server |
+    | **Outbound (sends)** | `POST /api/data/enrollment/publish` | To IoT Broker |
+    
+    ### Data Formats:
+    
+    | Data Type | Format | Size |
+    |-----------|--------|------|
+    | Embedding | Base64 Float32Array | 512 dimensions |
+    | Thumbnail | Base64 JPEG | 128x128 pixels |
+    | Capture Images | Base64 JPEG | Variable (webcam resolution) |
+    
+    ## Enrollment Flow Sequence
+    
+    ```
+    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+    │  WFM    │     │  Modal   │     │  Modal   │     │   GPU    │     │   IoT    │
+    │Dashboard │     │ Frontend │     │ Backend  │     │  Server  │     │  Broker  │
+    └────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘
+         │                │                │                │                │
+         │ Click "Enroll" │                │                │                │
+         │───────────────>│                │                │                │
+         │                │                │                │                │
+         │                │ GET /employee/ │                │                │
+         │                │ {id}/enrollment│                │                │
+         │                │───────────────>│                │                │
+         │                │<───────────────│                │                │
+         │                │                │                │                │
+         │                │ [User captures │                │                │
+         │                │  5 pose images]│                │                │
+         │                │                │                │                │
+         │                │ POST /capture  │                │                │
+         │                │───────────────>│                │                │
+         │                │                │                │                │
+         │                │                │ POST /vectorizer/generate       │
+         │                │                │───────────────>│                │
+         │                │                │<───────────────│                │
+         │                │                │ {embedding,    │                │
+         │                │                │  thumbnail}    │                │
+         │                │<───────────────│                │                │
+         │                │                │                │                │
+         │                │ POST /publish/ │                │                │
+         │                │ {employeeId}   │                │                │
+         │                │───────────────>│                │                │
+         │                │                │                │                │
+         │                │                │ POST /api/data/enrollment/publish
+         │                │                │───────────────────────────────>│
+         │                │                │<───────────────────────────────│
+         │                │                │ {devices_notified: N}          │
+         │                │                │                │                │
+         │                │                │                │     WebSocket │
+         │                │                │                │   enrollment_ │
+         │                │                │                │      update   │
+         │                │                │                │       ────────┼──> Edge
+         │                │                │                │               │   Devices
+         │                │<───────────────│                │                │
+         │                │ {success: true}│                │                │
+         │                │                │                │                │
+         │<───────────────│                │                │                │
+         │ Modal closes   │                │                │                │
+    ```
+    
+    ## Confirmation Model
+    
+    **Important:** The Modal receives confirmation from the IoT Broker that the 
+    enrollment was *sent* to devices, NOT confirmation that devices *received* it.
+    
+    This is a "fire and forget" model:
+    - IoT Broker returns `devices_notified: N` immediately after sending
+    - Edge devices receive the enrollment via WebSocket asynchronously
+    - No explicit acknowledgment from edge devices back to the Modal
+    
+    Edge devices will eventually sync missing enrollments via the pull-based
+    `/api/data/enrollments/sync` endpoint during heartbeat or startup.
+    
+    ## Multi-Tenant Architecture
+    
+    All requests must include tenant identification via the `Host` header.
+    Pattern: `{tenant-id}-bridge{env}.qraie.ai`
+    
+    Example: `hbss-bridgestg.qraie.ai` → Tenant: `hbss`, Environment: `staging`
+    
+  version: 2.1.0
+  contact:
+    name: API Support
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://{tenant}-bridge{env}.qraie.ai
+    description: Multi-tenant API server
+    variables:
+      tenant:
+        default: hbss
+        description: Tenant identifier
+      env:
+        default: stg
+        description: Environment (stg for staging, empty for production)
+        enum:
+          - stg
+          - ''
+
+tags:
+  - name: IoT Broker - Devices
+    description: Device management endpoints (Data Service)
+  - name: IoT Broker - Enrollment
+    description: Enrollment publishing endpoints (Data Service) - Called BY the Modal
+  - name: Modal - Internal
+    description: |
+      Internal Modal API endpoints (within Bridge server).
+      These endpoints are called by the Modal's React frontend.
+  - name: Modal - Employee
+    description: Employee enrollment info endpoints (called by Modal frontend)
+  - name: Vectorizer
+    description: |
+      GPU Vectorizer embedding generation (AWS GPU Server).
+      Called BY the Modal to generate facial embeddings.
+
+paths:
+  # ===========================================
+  # IoT Broker - Data Service
+  # ===========================================
+  /api/data/devices:
+    get:
+      tags:
+        - IoT Broker - Devices
+      summary: Get device list
+      description: Retrieve list of registered edge devices, optionally filtered by device type.
+      operationId: getDevices
+      parameters:
+        - name: device-type
+          in: query
+          description: Filter devices by capability type
+          required: false
+          schema:
+            type: string
+            enum:
+              - face_recognition
+              - emotion_monitoring
+      responses:
+        '200':
+          description: List of devices
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/data/devices/{deviceId}:
+    get:
+      tags:
+        - IoT Broker - Devices
+      summary: Get device by ID
+      description: Retrieve details for a specific device.
+      operationId: getDeviceById
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Device details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EdgeDevice'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/data/devices/{deviceId}/heartbeat:
+    post:
+      tags:
+        - IoT Broker - Devices
+      summary: Update device heartbeat
+      description: Update the last heartbeat timestamp for a device.
+      operationId: updateDeviceHeartbeat
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Heartbeat updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Heartbeat updated
+                  last_heartbeat_at:
+                    type: string
+                    format: date-time
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/data/enrollment/publish:
+    post:
+      tags:
+        - IoT Broker - Enrollment
+      summary: Publish enrollment to devices
+      description: |
+        Publish facial enrollment data to all face recognition devices.
+        
+        The system automatically:
+        1. Retrieves `enrollmentProcessedFile` from the database
+        2. Broadcasts to ALL face recognition devices via WebSocket
+        
+        Only `employee_id` is required in the request body.
+      operationId: publishEnrollment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishEnrollmentRequest'
+      responses:
+        '200':
+          description: Enrollment published successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishEnrollmentResponse'
+        '400':
+          description: Bad request - missing employee_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Employee enrollment not found or enrollmentProcessedFile missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ===========================================
+  # Modal Internal API (within Bridge Server)
+  # ===========================================
+  /api/bridge/employee/{employeeId}/enrollment:
+    get:
+      tags:
+        - Modal - Employee
+      summary: Get employee enrollment info
+      description: |
+        Retrieve enrollment information for modal initialization.
+        
+        Called by the Modal frontend when the enrollment modal opens.
+      operationId: getEmployeeEnrollment
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      responses:
+        '200':
+          description: Employee enrollment information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeeEnrollmentInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/bridge/enrollment/complete:
+    post:
+      tags:
+        - Modal - Internal
+      summary: Complete enrollment (internal)
+      description: |
+        Store final enrollment data in the Bridge database.
+        
+        **Called internally** by the Modal after:
+        1. GPU Server returns embedding
+        2. IoT Broker confirms publish
+        
+        This endpoint is NOT called by external services.
+      operationId: completeEnrollment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BridgeEnrollmentComplete'
+      responses:
+        '200':
+          description: Enrollment saved to employee profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeEnrollmentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/enrollment/status/{employeeId}:
+    get:
+      tags:
+        - Modal - Internal
+      summary: Get enrollment status
+      description: |
+        Retrieve the current enrollment status for an employee.
+        
+        Called by the Modal frontend to display progress.
+      operationId: getEnrollmentStatus
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      responses:
+        '200':
+          description: Enrollment status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentStatusResponse'
+
+  /api/enrollment/capture:
+    post:
+      tags:
+        - Modal - Internal
+      summary: Submit captured images
+      description: |
+        Submit facial images captured by the Modal's webcam interface.
+        
+        **Flow:**
+        1. Modal frontend captures 5 pose images from webcam
+        2. Frontend POSTs to this endpoint
+        3. Backend forwards to GPU Server (`/api/vectorizer/generate`)
+        4. Backend returns embedding + thumbnail to frontend
+        5. Frontend calls `/api/enrollment/publish/:employeeId`
+      operationId: submitCaptures
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitCapturesRequest'
+      responses:
+        '200':
+          description: Images processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureResponse'
+        '400':
+          description: Invalid request - missing userId or insufficient captures
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/enrollment/publish/{employeeId}:
+    post:
+      tags:
+        - Modal - Internal
+      summary: Publish enrollment to edge devices
+      description: |
+        Publish the enrollment to all edge devices via IoT Broker.
+        
+        **Flow:**
+        1. Modal frontend calls this endpoint after capture/vectorization
+        2. Backend calls IoT Broker `POST /api/data/enrollment/publish`
+        3. IoT Broker broadcasts to edge devices via WebSocket
+        4. Backend updates enrollment status to "published"
+        
+        **Note:** This is the Modal's internal endpoint. The actual IoT Broker
+        endpoint is `/api/data/enrollment/publish`.
+      operationId: publishEnrollmentFromModal
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  description: Force re-publish even if already published
+                  default: false
+      responses:
+        '200':
+          description: Enrollment published to edge devices
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishEnrollmentResponse'
+        '400':
+          description: Enrollment not ready (missing embedding)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/enrollment/{employeeId}:
+    delete:
+      tags:
+        - Modal - Internal
+      summary: Delete enrollment
+      description: |
+        Remove enrollment data for an employee.
+        
+        Also notifies IoT Broker to broadcast deletion to edge devices.
+      operationId: deleteEnrollment
+      parameters:
+        - $ref: '#/components/parameters/EmployeeId'
+      responses:
+        '200':
+          description: Enrollment deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Enrollment deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ===========================================
+  # GPU Vectorizer API
+  # ===========================================
+  /api/vectorizer/generate:
+    post:
+      tags:
+        - Vectorizer
+      summary: Generate facial embedding
+      description: |
+        Process captured images and generate facial embedding on the AWS GPU server.
+        
+        Returns:
+        - `enrollmentProcessedFile`: Base64 Float32Array (512 dimensions)
+        - `enrollmentPictureThumbnail`: Base64 JPEG 128x128
+      operationId: generateEmbedding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorizerRequest'
+      responses:
+        '200':
+          description: Embedding generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VectorizerResponse'
+        '400':
+          description: Invalid request - missing images or invalid format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Unable to process images - no face detected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  # ===========================================
+  # Parameters
+  # ===========================================
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      description: Unique device identifier
+      required: true
+      schema:
+        type: string
+        example: cam-001
+
+    EmployeeId:
+      name: employeeId
+      in: path
+      description: Employee identifier
+      required: true
+      schema:
+        type: string
+        example: EMP123456
+
+  # ===========================================
+  # Responses
+  # ===========================================
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    Unauthorized:
+      description: Unauthorized - missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ===========================================
+  # Schemas
+  # ===========================================
+  schemas:
+    # ---- Enums ----
+    EnrollmentStatus:
+      type: string
+      description: Enrollment status
+      enum:
+        - unenrolled
+        - captured
+        - published
+      example: published
+
+    DeviceStatus:
+      type: string
+      description: Device connection status
+      enum:
+        - online
+        - offline
+        - provisioning
+      example: online
+
+    DeviceCapability:
+      type: string
+      description: Device capability type
+      enum:
+        - face_recognition
+        - emotion_monitoring
+      example: face_recognition
+
+    PoseName:
+      type: string
+      description: Capture pose name
+      enum:
+        - front
+        - left
+        - right
+        - up
+        - down
+      example: front
+
+    # ---- Device Schemas ----
+    EdgeDevice:
+      type: object
+      required:
+        - device_id
+        - display_name
+        - capability
+        - status
+      properties:
+        device_id:
+          type: string
+          description: Unique device identifier
+          example: cam-001
+        display_name:
+          type: string
+          description: Human-readable device name
+          example: Lobby Entrance Camera
+        device_category:
+          type: string
+          description: Device category
+          example: camera
+        capability:
+          $ref: '#/components/schemas/DeviceCapability'
+        location_label:
+          type: string
+          description: Friendly location name
+          example: Main entrance
+        status:
+          $ref: '#/components/schemas/DeviceStatus'
+        last_heartbeat_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last heartbeat timestamp
+          example: '2026-01-16T10:29:45Z'
+
+    DeviceListResponse:
+      type: object
+      required:
+        - devices
+        - total
+        - online
+        - offline
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/EdgeDevice'
+        total:
+          type: integer
+          description: Total number of devices
+          example: 3
+        online:
+          type: integer
+          description: Number of online devices
+          example: 2
+        offline:
+          type: integer
+          description: Number of offline devices
+          example: 1
+
+    # ---- Enrollment Schemas ----
+    PublishEnrollmentRequest:
+      type: object
+      required:
+        - employee_id
+      properties:
+        employee_id:
+          type: string
+          description: Employee ID to publish enrollment for
+          example: EMP123456
+
+    PublishEnrollmentResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Enrollment published to all devices
+        data:
+          type: object
+          properties:
+            employee_id:
+              type: string
+              example: EMP123456
+            devices_notified:
+              type: integer
+              example: 2
+        error:
+          type: string
+          nullable: true
+
+    EmployeeEnrollmentInfo:
+      type: object
+      required:
+        - employee_id
+        - enrollmentStatus
+      properties:
+        employee_id:
+          type: string
+          example: EMP123456
+        employee_name:
+          type: string
+          example: John Doe
+        enrollmentStatus:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        enrolled_at:
+          type: string
+          format: date-time
+          nullable: true
+        enrollmentPictureThumbnail:
+          type: string
+          nullable: true
+          description: Base64 JPEG 128x128 or URL path
+
+    BridgeEnrollmentComplete:
+      type: object
+      required:
+        - employee_id
+        - enrollmentProcessedFile
+        - enrollmentPictureThumbnail
+        - enrollmentStatus
+      properties:
+        employee_id:
+          type: string
+          description: Employee ID
+          example: EMP123456
+        enrollmentProcessedFile:
+          type: string
+          description: Base64 encoded Float32Array (512 dimensions)
+          example: AACAPwAAgD8AAIA/...
+        embedding_dim:
+          type: integer
+          description: Embedding dimension
+          example: 512
+        model:
+          type: string
+          description: Model name
+          example: ArcFace
+        enrollmentPictureThumbnail:
+          type: string
+          description: Base64 encoded JPEG 128x128
+          example: /9j/4AAQSkZJRg...
+        enrollmentStatus:
+          $ref: '#/components/schemas/EnrollmentStatus'
+
+    BridgeEnrollmentResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Enrollment saved to employee profile
+        data:
+          type: object
+          properties:
+            employee_id:
+              type: string
+              example: EMP123456
+            enrollmentStatus:
+              $ref: '#/components/schemas/EnrollmentStatus'
+            enrolled_at:
+              type: string
+              format: date-time
+              example: '2026-01-16T10:30:00Z'
+
+    EnrollmentStatusResponse:
+      type: object
+      required:
+        - employee_id
+        - enrollmentStatus
+      properties:
+        employee_id:
+          type: string
+          example: EMP123456
+        enrollmentStatus:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        enrolled_at:
+          type: string
+          format: date-time
+          nullable: true
+        image_count:
+          type: integer
+          example: 5
+        profile_image_url:
+          type: string
+          nullable: true
+          example: /api/enrollment/profile/EMP123456
+
+    # ---- Capture Schemas ----
+    CaptureImage:
+      type: object
+      required:
+        - pose
+        - image_data
+      properties:
+        pose:
+          $ref: '#/components/schemas/PoseName'
+        image_data:
+          type: string
+          description: Base64 encoded JPEG image
+          example: data:image/jpeg;base64,/9j/4AAQ...
+
+    SubmitCapturesRequest:
+      type: object
+      required:
+        - employee_id
+        - captures
+      properties:
+        employee_id:
+          type: string
+          example: EMP123456
+        captures:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/CaptureImage'
+          description: Array of 5 captured pose images
+
+    CaptureResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Successfully processed 5 images for enrollment
+        data:
+          type: object
+          properties:
+            employee_id:
+              type: string
+              example: EMP123456
+            embedding_count:
+              type: integer
+              example: 5
+            enrollmentPictureThumbnail:
+              type: string
+              example: /images/EMP123456/profile_128.jpg
+            enrollmentStatus:
+              $ref: '#/components/schemas/EnrollmentStatus'
+
+    # ---- Vectorizer Schemas ----
+    VectorizerImage:
+      type: object
+      required:
+        - pose
+        - data
+      properties:
+        pose:
+          $ref: '#/components/schemas/PoseName'
+        data:
+          type: string
+          description: Base64 encoded image data
+          example: /9j/4AAQSkZJRg...
+
+    VectorizerRequest:
+      type: object
+      required:
+        - employee_id
+        - images
+        - function
+      properties:
+        employee_id:
+          type: string
+          example: EMP123456
+        images:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/VectorizerImage'
+        function:
+          type: string
+          description: Processing function type
+          enum:
+            - facial_embedding
+            - emotion_analysis
+          example: facial_embedding
+
+    VectorizerResponse:
+      type: object
+      required:
+        - employee_id
+        - enrollmentProcessedFile
+        - embedding_dim
+        - model
+        - enrollmentPictureThumbnail
+        - image_count
+      properties:
+        employee_id:
+          type: string
+          example: EMP123456
+        enrollmentProcessedFile:
+          type: string
+          description: Base64 encoded Float32Array (512 dimensions for ArcFace)
+          example: AACAPwAAgD8AAIA/...
+        embedding_dim:
+          type: integer
+          description: Embedding vector dimension
+          example: 512
+        model:
+          type: string
+          description: Model used for embedding
+          example: ArcFace
+        enrollmentPictureThumbnail:
+          type: string
+          description: Base64 encoded JPEG 128x128 thumbnail
+          example: /9j/4AAQSkZJRg...
+        image_count:
+          type: integer
+          description: Number of images successfully processed
+          example: 5
+
+    # ---- Error Schema ----
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Human-readable error message
+          example: Employee enrollment not found
+        code:
+          type: string
+          description: Error code for programmatic handling
+          example: ENROLLMENT_NOT_FOUND
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional error context
+
+  # ===========================================
+  # Security Schemes
+  # ===========================================
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from WFM authentication
+
+    TenantHeader:
+      type: apiKey
+      in: header
+      name: X-Tenant-ID
+      description: Tenant identifier for service-to-service calls
+
+security:
+  - BearerAuth: []

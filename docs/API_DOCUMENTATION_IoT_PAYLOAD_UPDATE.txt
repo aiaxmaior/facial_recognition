@@ -1,0 +1,122 @@
+Complete Payload Structures
+1. Face Recognition Event Payload
+Device → Gateway (Socket.IO Message):
+
+[
+
+  {
+
+    header: {
+
+      to: "gateway",
+
+      from: "cam-001",                    // Device ID
+
+      source_type: "device",
+
+      auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",  // JWT or API key
+
+      command_id: "event.log",
+
+      timestamp: "2024-01-01T12:00:00.000Z"  // ISO 8601 format
+
+    }
+
+  },
+
+  {
+
+    data: {
+
+      event_id: "EV1-1704067200000-device123",  // OPTIONAL - Device can provide
+
+      event_type: "face_recognition",
+
+      person_name: "John Doe",                  // REQUIRED - Cannot be "Unknown" or empty
+
+      person_id: "EMP-001",                     // REQUIRED - Employee ID
+
+      metadata: {                                // OPTIONAL - Additional data
+
+        confidence: 0.95,
+
+        person_detected: true,
+
+        // ... any other metadata
+
+      },
+
+      debug: []                                  // REQUIRED - Always present (empty array by default)
+
+    }
+
+  }
+
+]
+
+2. Emotion Monitoring Event Payload
+Device → Gateway (Socket.IO Message):
+
+[
+
+  {
+
+    header: {
+
+      to: "gateway",
+
+      from: "cam-002",                    // Device ID
+
+      source_type: "device",
+
+      auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",  // JWT or API key
+
+      command_id: "event.log",
+
+      timestamp: "2024-01-01T12:00:00.000Z"  // ISO 8601 format
+
+    }
+
+  },
+
+  {
+
+    data: {
+
+      event_id: "EV2-1704067200000-device456",  // OPTIONAL - Device can provide
+
+      event_type: "emotion_monitoring",
+
+      video: [                                  // REQUIRED - Array of base64 encoded frames
+
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+
+        // ... more frames
+
+      ],
+
+      story: "A person entered the room looking happy and engaged in conversation with others...",  // OPTIONAL - ~100 tokens
+
+      metadata: {                                // OPTIONAL - Additional data
+
+        duration: 5.2,                           // Video duration in seconds
+
+        frame_count: 150,                        // Number of frames
+
+        fps: 30,                                 // Frames per second
+
+        resolution: "1920x1080",                // Video resolution
+
+        // ... any other metadata
+
+      },
+
+      debug: []                                  // REQUIRED - Always present (empty array by default)
+
+    }
+
+  }
+
+]

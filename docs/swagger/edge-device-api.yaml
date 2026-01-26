@@ -27,7 +27,17 @@ info:
     - `X-Device-ID` header: Unique device identifier
     - `Authorization: Bearer {token}`: Device JWT token (optional for some endpoints)
     
-  version: 1.1.0
+    ## Message Format (Socket.IO)
+    
+    All event messages use the Socket.IO format with header + data structure:
+    ```json
+    [
+      { "header": { "to": "gateway", "from": "device-id", ... } },
+      { "data": { "event_id": "...", "event_type": "...", "debug": [], ... } }
+    ]
+    ```
+    
+  version: 1.2.0
   contact:
     name: API Support
   license:
@@ -247,9 +257,9 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   # ===========================================
-  # Events
+  # Events (v1 - Socket.IO Format)
   # ===========================================
-  /data/events:
+  /v1/events:
     get:
       tags:
         - Events
@@ -297,12 +307,16 @@ paths:
     post:
       tags:
         - Events
-      summary: Submit event
+      summary: Submit events (Socket.IO format)
       description: |
-        Submit a recognition or emotion event.
+        Submit one or more events using the Socket.IO message format.
         
-        For batched submission, see the batch endpoint.
-      operationId: createEvent
+        Each message is an array of `[header, data]` where:
+        - **header**: Contains routing info (to, from, auth_token, command_id, timestamp)
+        - **data**: Contains the event payload with **required** `debug` field
+        
+        The `debug` field is used for Graylog logging and must always be present (empty array if no debug info).
+      operationId: createEvents
       parameters:
         - $ref: '#/components/parameters/DeviceIdHeader'
       requestBody:
@@ -310,7 +324,215 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EventSubmission'
+              $ref: '#/components/schemas/EventBatchSubmission'
+            examples:
+              faceRecognition:
+                summary: Face Recognition Event
+                value:
+                  device_id: "cam-001"
+                  timestamp: "2026-01-23T10:30:00.000Z"
+                  messages:
+                    - - header:
+                          to: "gateway"
+                          from: "cam-001"
+                          source_type: "device"
+                          auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          command_id: "event.log"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                      - data:
+                          event_id: "EV1-1706005800000-cam001"
+                          event_type: "face_recognition"
+                          person_name: "John Doe"
+                          person_id: "EMP-001"
+                          metadata:
+                            confidence: 0.95
+                            person_detected: true
+                            inference_ms: 42
+                          debug: []
+              emotionMonitoring:
+                summary: Emotion Monitoring Event
+                value:
+                  device_id: "cam-002"
+                  timestamp: "2026-01-23T10:30:00.000Z"
+                  messages:
+                    - - header:
+                          to: "gateway"
+                          from: "cam-002"
+                          source_type: "device"
+                          auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          command_id: "event.log"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                      - data:
+                          event_id: "EV2-1706005800000-cam002"
+                          event_type: "emotion_monitoring"
+                          person_id: "EMP-001"
+                          story: "A person entered the room looking happy and engaged in conversation with others..."
+                          metadata:
+                            duration: 15.0
+                            fps: 25
+                            resolution: "1280x720"
+                          debug:
+                            - level: "info"
+                              message: "Emotion event triggered by high valence score"
+                              timestamp: "2026-01-23T10:30:00.000Z"
+      responses:
+        '201':
+          description: Events created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Device not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/events/video:
+    post:
+      tags:
+        - Events
+      summary: Submit emotion event with video clip
+      description: |
+        Submit an emotion monitoring event with an attached video clip.
+        
+        The video clip is sent as a base64-encoded MP4 string within the JSON payload.
+        
+        **Video Specifications:**
+        - Duration: 15 seconds (10s pre-event + 5s post-event)
+        - Format: MP4 (H.264 or H.265)
+        - Encoding: Base64 string
+        
+        **Required Fields:**
+        - `debug`: Array for Graylog entries (can be empty)
+        
+        **Optional Fields:**
+        - `story`: VLM narrative description (~100 tokens)
+        - `video_clip`: Base64-encoded MP4
+        - `person_id`: Employee ID if person was identified
+      operationId: createVideoEvent
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoEventSubmission'
+            example:
+              device_id: "cam-002"
+              timestamp: "2026-01-23T10:30:00.000Z"
+              messages:
+                - - header:
+                      to: "gateway"
+                      from: "cam-002"
+                      source_type: "device"
+                      auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      command_id: "event.log"
+                      timestamp: "2026-01-23T10:30:00.000Z"
+                  - data:
+                      event_id: "cam-002_EV2-1706005800000"
+                      event_type: "emotion_monitoring"
+                      video_clip: "AAAAGGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE..."
+                      story: "A person entered the room looking happy and engaged in conversation with others..."
+                      metadata:
+                        duration: 15.0
+                        fps: 25
+                        resolution: "1280x720"
+                      debug:
+                        - level: "info"
+                          message: "Video clip captured for event cam-002_EV2-1706005800000"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                          clip_size_kb: 1024.5
+      responses:
+        '201':
+          description: Video event created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: Video clip too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Legacy Events (backward compatibility)
+  # ===========================================
+  /data/events:
+    get:
+      tags:
+        - Events
+      summary: Get events (legacy)
+      description: Retrieve events with optional filtering. Use /v1/events for new implementations.
+      operationId: getEventsLegacy
+      deprecated: true
+      parameters:
+        - name: device_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - face_recognition
+              - emotion_monitoring
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: skip
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoredEvent'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Events
+      summary: Submit event (legacy)
+      description: |
+        Submit a recognition or emotion event using the legacy flat format.
+        Use /v1/events for new implementations with Socket.IO format.
+      operationId: createEventLegacy
+      deprecated: true
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventSubmissionLegacy'
             example:
               device_id: "cam-001"
               event_type: "face_recognition"
@@ -453,9 +675,11 @@ paths:
     post:
       tags:
         - Archive - Clips
-      summary: Upload video clip
+      summary: Upload video clip (multipart)
       description: |
-        Upload event-triggered video clip with metadata.
+        Upload event-triggered video clip with metadata using multipart form.
+        
+        **Note:** For inline video submission with events, use `/v1/events/video` instead.
         
         **Clip Specifications:**
         - Duration: 15 seconds (10s pre-event + 5s post-event)
@@ -785,9 +1009,245 @@ components:
         enrollment_version:
           type: integer
 
-    # ---- Event Schemas ----
-    EventSubmission:
+    # ---- Socket.IO Message Schemas ----
+    MessageHeader:
       type: object
+      description: Socket.IO message header for routing and authentication
+      required:
+        - to
+        - from
+        - command_id
+        - timestamp
+      properties:
+        to:
+          type: string
+          description: Message destination
+          example: "gateway"
+        from:
+          type: string
+          description: Device ID sending the message
+          example: "cam-001"
+        source_type:
+          type: string
+          description: Source type identifier
+          example: "device"
+        auth_token:
+          type: string
+          description: JWT or API key for authentication
+        command_id:
+          type: string
+          description: Command identifier
+          example: "event.log"
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp
+
+    DebugEntry:
+      type: object
+      description: Graylog debug/log entry
+      properties:
+        level:
+          type: string
+          enum: [debug, info, warning, error]
+          description: Log level
+        message:
+          type: string
+          description: Log message
+        timestamp:
+          type: string
+          format: date-time
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context data
+
+    # ---- Event Data Schemas ----
+    FaceRecognitionData:
+      type: object
+      description: Data payload for face recognition events
+      required:
+        - event_type
+        - person_name
+        - person_id
+        - debug
+      properties:
+        event_id:
+          type: string
+          description: Event ID (format EV1-{timestamp}-{device})
+          example: "EV1-1706005800000-cam001"
+        event_type:
+          type: string
+          enum: [face_recognition]
+        person_name:
+          type: string
+          description: Person's display name (REQUIRED, cannot be empty or "Unknown")
+          example: "John Doe"
+        person_id:
+          type: string
+          description: Employee/Person ID (REQUIRED)
+          example: "EMP-001"
+        metadata:
+          $ref: '#/components/schemas/FaceRecognitionMetadata'
+        debug:
+          type: array
+          description: Graylog debug entries (REQUIRED, empty array if no debug info)
+          items:
+            $ref: '#/components/schemas/DebugEntry'
+
+    EmotionMonitoringData:
+      type: object
+      description: Data payload for emotion monitoring events
+      required:
+        - event_type
+        - debug
+      properties:
+        event_id:
+          type: string
+          description: Event ID (format EV2-{timestamp}-{device} or {device_id}_{event_id})
+          example: "EV2-1706005800000-cam002"
+        event_type:
+          type: string
+          enum: [emotion_monitoring]
+        person_id:
+          type: string
+          description: Employee/Person ID if identified
+          example: "EMP-001"
+        story:
+          type: string
+          description: VLM narrative description (~100 tokens)
+          example: "A person entered the room looking happy and engaged in conversation with others..."
+        video_clip:
+          type: string
+          format: byte
+          description: Base64-encoded MP4 video clip
+        metadata:
+          $ref: '#/components/schemas/EmotionMonitoringMetadata'
+        debug:
+          type: array
+          description: Graylog debug entries (REQUIRED, empty array if no debug info)
+          items:
+            $ref: '#/components/schemas/DebugEntry'
+
+    FaceRecognitionMetadata:
+      type: object
+      properties:
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Recognition confidence score
+        person_detected:
+          type: boolean
+          description: Whether a person was detected
+          default: true
+        distance:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Cosine distance score
+        frames_tracked:
+          type: integer
+          minimum: 1
+          description: Frames tracked before validation
+        inference_ms:
+          type: integer
+          minimum: 0
+          description: Inference time in milliseconds
+        face_bbox:
+          type: array
+          items:
+            type: integer
+          description: Face bounding box [x, y, w, h]
+
+    EmotionMonitoringMetadata:
+      type: object
+      properties:
+        duration:
+          type: number
+          minimum: 0
+          description: Video duration in seconds
+          example: 15.0
+        frame_count:
+          type: integer
+          minimum: 1
+          description: Number of frames analyzed
+        fps:
+          type: integer
+          minimum: 1
+          description: Frames per second
+          example: 25
+        resolution:
+          type: string
+          description: Video resolution
+          example: "1280x720"
+        inference_ms:
+          type: integer
+          minimum: 0
+          description: Inference time in milliseconds
+
+    # ---- Event Submission Schemas ----
+    EventBatchSubmission:
+      type: object
+      description: Batch event submission using Socket.IO message format
+      required:
+        - device_id
+        - timestamp
+        - messages
+      properties:
+        device_id:
+          type: string
+          description: Device ID submitting events
+          example: "cam-001"
+        timestamp:
+          type: string
+          format: date-time
+          description: Submission timestamp
+        messages:
+          type: array
+          description: Array of Socket.IO messages, each containing [header, data]
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              oneOf:
+                - type: object
+                  properties:
+                    header:
+                      $ref: '#/components/schemas/MessageHeader'
+                - type: object
+                  properties:
+                    data:
+                      oneOf:
+                        - $ref: '#/components/schemas/FaceRecognitionData'
+                        - $ref: '#/components/schemas/EmotionMonitoringData'
+
+    VideoEventSubmission:
+      type: object
+      description: Video event submission with base64-encoded MP4 clip
+      required:
+        - device_id
+        - timestamp
+        - messages
+      properties:
+        device_id:
+          type: string
+          example: "cam-002"
+        timestamp:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            description: "[header, data] tuple where data contains video_clip"
+
+    EventSubmissionLegacy:
+      type: object
+      description: Legacy flat event submission format (deprecated)
       required:
         - device_id
         - event_type
@@ -806,7 +1266,7 @@ components:
           description: Employee ID
         emotion_code:
           type: string
-          description: Required for emotion_monitoring
+          description: Deprecated - use story field instead
         metadata:
           type: object
           additionalProperties: true
@@ -827,10 +1287,15 @@ components:
           type: string
         person_id:
           type: string
-        emotion_code:
+        story:
           type: string
+          description: VLM narrative for emotion events
         metadata:
           type: object
+        debug:
+          type: array
+          items:
+            $ref: '#/components/schemas/DebugEntry'
         event_timestamp:
           type: string
           format: date-time
@@ -847,6 +1312,9 @@ components:
           type: string
         event_id:
           type: string
+        events_processed:
+          type: integer
+          description: Number of events processed in batch
 
     # ---- Enrollment Schemas ----
     EnrollmentRecord:
