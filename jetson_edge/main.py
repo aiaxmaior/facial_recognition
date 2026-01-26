@@ -37,6 +37,7 @@ from iot_integration.event_validator import EventValidator, EmotionEventValidato
 from iot_integration.sync_manager import SyncManager
 from iot_integration.db_manager import EnrollmentDBManager
 from iot_integration.schemas.event_schemas import FacialIdEvent
+from iot_integration.image_utils import encode_video_clip_b64
 
 # Local imports
 from video_buffer import VideoRingBuffer
@@ -314,6 +315,8 @@ class EdgeDevice:
                 pre_event_seconds=buffer_config.get("pre_event_seconds", 10),
                 post_event_seconds=buffer_config.get("post_event_seconds", 5)
             )
+            # Register callback for when clips are ready
+            self.video_buffer.on_clip_ready = self._on_clip_ready
         
         # IoT client
         iot_config = IoTClientConfig(
@@ -361,16 +364,71 @@ class EdgeDevice:
         """Callback when an event is validated."""
         logger.info(f"Event validated: user={event.user_id}, confidence={event.confidence:.2f}")
         
-        # Send to IoT broker
+        # Send event to IoT broker (video clip sent separately when ready)
         self.iot_client.send_event(event)
         self.stats["events_validated"] += 1
         
         # Trigger video clip capture if buffer enabled
+        # Video will be sent via _on_clip_ready callback when encoding completes
         if self.video_buffer:
-            clip_path = self.video_buffer.capture_event_clip(event.event_id)
-            if clip_path:
-                logger.info(f"Captured event clip: {clip_path}")
-                # TODO: Queue clip for upload to archive server
+            # Clip filename is device_id + event_id
+            clip_event_id = f"{self.device_id}_{event.event_id}"
+            self.video_buffer.capture_event_clip(clip_event_id)
+    
+    def _on_clip_ready(self, event_id: str, clip_path: str) -> None:
+        """
+        Callback when a video clip is ready to send.
+        
+        Sends the video clip to IoT broker with:
+        - story: VLM narrative description (TODO: integrate VLM)
+        - debug: Graylog debug entries
+        - metadata: Video metadata
+        """
+        logger.info(f"Video clip ready: {event_id}")
+        
+        try:
+            # Encode video to base64 for transmission
+            video_b64 = encode_video_clip_b64(clip_path)
+            
+            if not video_b64:
+                logger.error(f"Failed to encode video clip: {clip_path}")
+                return
+            
+            # TODO: Get VLM story when emotion event is triggered
+            # For now, story is None - will be populated when VLM integration is complete
+            # story = await vlm_service.analyze_video(clip_path)
+            story = None  # Placeholder for VLM narrative
+            
+            # Build debug/Graylog entries
+            debug_entries = [
+                {
+                    "level": "info",
+                    "message": f"Video clip captured for event {event_id}",
+                    "timestamp": datetime.now().isoformat() + "Z",
+                    "clip_path": clip_path,
+                    "clip_size_kb": len(video_b64) / 1024
+                }
+            ]
+            
+            # Video metadata
+            metadata = {
+                "duration": self.video_buffer.pre_event_seconds + self.video_buffer.post_event_seconds,
+                "fps": self.video_buffer.fps,
+                "resolution": f"{self.video_buffer.resolution[0]}x{self.video_buffer.resolution[1]}",
+            }
+            
+            # Send video clip to IoT broker with story and debug
+            self.iot_client.send_video_clip(
+                event_id=event_id,
+                video_b64=video_b64,
+                story=story,
+                debug=debug_entries,
+                metadata=metadata
+            )
+            logger.info(f"Video clip sent: {event_id} ({len(video_b64)/1024:.1f} KB)")
+                
+        except Exception as e:
+            logger.error(f"Failed to send video clip {event_id}: {e}")
     
     def _connect_camera(self) -> bool:
         """Connect to RTSP camera."""

@@ -99,6 +99,8 @@ class IoTClient:
             "events_queued": 0,
             "events_sent": 0,
             "events_failed": 0,
+            "video_clips_sent": 0,
+            "video_clips_failed": 0,
             "sync_requests": 0,
             "sync_failures": 0,
             "bytes_sent": 0,
@@ -254,11 +256,31 @@ class IoTClient:
         
         url = f"{self.config.broker_url}/api/v1/events"
         
-        # Build payload
+        # Build payload with Socket.IO message format
+        # Each event is [header, data] structure
+        messages = []
+        for e in events:
+            # Use new to_broker_message() if available, fallback to legacy
+            if hasattr(e, 'to_broker_message'):
+                messages.append(e.to_broker_message())
+            else:
+                # Legacy format - wrap in header/data structure
+                messages.append([
+                    {"header": {
+                        "to": "gateway",
+                        "from": self.config.device_id,
+                        "source_type": "device",
+                        "auth_token": self.config.api_key,
+                        "command_id": "event.log",
+                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    }},
+                    {"data": e.to_broker_json()}
+                ])
+        
         payload = {
             "device_id": self.config.device_id,
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "events": [e.to_broker_json() for e in events],
+            "messages": messages,
         }
         
         try:
@@ -319,10 +341,27 @@ class IoTClient:
         
         url = f"{self.config.broker_url}/api/v1/events"
         
+        # Build Socket.IO message format
+        if hasattr(event, 'to_broker_message'):
+            message = event.to_broker_message()
+        else:
+            # Legacy format
+            message = [
+                {"header": {
+                    "to": "gateway",
+                    "from": self.config.device_id,
+                    "source_type": "device",
+                    "auth_token": self.config.api_key,
+                    "command_id": "event.log",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }},
+                {"data": event.to_broker_json()}
+            ]
+        
         payload = {
             "device_id": self.config.device_id,
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "events": [event.to_broker_json()],
+            "messages": [message],
         }
         
         try:
@@ -414,6 +453,82 @@ class IoTClient:
             logger.error(f"Failed to parse sync response: {e}")
             self.stats["sync_failures"] += 1
             return None
+    
+    # =========================================================================
+    # Video Clip Upload
+    # =========================================================================
+    
+    def send_video_clip(
+        self,
+        event_id: str,
+        video_b64: str,
+        story: Optional[str] = None,
+        debug: Optional[List] = None,
+        metadata: Optional[Dict] = None,
+    ) -> bool:
+        """
+        Send a video clip for an event to the IoT broker.
+        
+        The video clip is base64 encoded and sent as part of a JSON payload
+        using the Socket.IO message format (header + data).
+        
+        Args:
+            event_id: Event identifier (format: {device_id}_{event_id})
+            video_b64: Base64-encoded MP4 video data
+            story: Optional VLM narrative description (~100 tokens)
+            debug: Graylog debug entries (defaults to empty array)
+            metadata: Optional additional metadata
+            
+        Returns:
+            True if sent successfully
+        """
+        url = f"{self.config.broker_url}/api/v1/events/video"
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        
+        # Build Socket.IO message format
+        message = [
+            {"header": {
+                "to": "gateway",
+                "from": self.config.device_id,
+                "source_type": "device",
+                "auth_token": self.config.api_key,
+                "command_id": "event.log",
+                "timestamp": timestamp
+            }},
+            {"data": {
+                "event_id": event_id,
+                "event_type": "emotion_monitoring",
+                "video_clip": video_b64,
+                "story": story,
+                "metadata": metadata or {},
+                "debug": debug if debug is not None else []  # REQUIRED field
+            }}
+        ]
+        
+        payload = {
+            "device_id": self.config.device_id,
+            "timestamp": timestamp,
+            "messages": [message],
+        }
+        
+        try:
+            response = self._session.post(
+                url,
+                json=payload,
+                timeout=self.config.timeout_seconds * 2,  # Allow more time for video
+                verify=self.config.verify_ssl,
+            )
+            response.raise_for_status()
+            
+            self.stats["video_clips_sent"] += 1
+            self.stats["bytes_sent"] += len(video_b64)
+            logger.info(f"Video clip sent for event: {event_id}")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send video clip: {e}")
+            self.stats["video_clips_failed"] += 1
+            return False
     
     # =========================================================================
     # Heartbeat

@@ -1,13 +1,15 @@
 """
-Image utilities for IoT event payloads.
+Image and video utilities for IoT event payloads.
 
-Provides image compression and encoding for transmitting
-event images to the IoT broker.
+Provides image/video compression and encoding for transmitting
+event data to the IoT broker. All media is base64 encoded for
+JSON payload compatibility.
 """
 
 import base64
 import io
 import logging
+import os
 from typing import Optional, Tuple
 import cv2
 import numpy as np
@@ -255,4 +257,83 @@ def extract_face_thumbnail(
         
     except Exception as e:
         logger.error(f"Failed to extract face thumbnail: {e}")
+        return None
+
+
+# =============================================================================
+# Video Clip Utilities
+# =============================================================================
+
+def encode_video_clip_b64(file_path: str) -> Optional[str]:
+    """
+    Read a video clip file and encode to base64 string.
+    
+    The base64 string can be included in JSON payloads for transmission
+    to the IoT broker. The receiving end decodes back to binary MP4.
+    
+    Args:
+        file_path: Path to MP4 video file
+        
+    Returns:
+        Base64-encoded string of the video file, or None on failure
+    """
+    try:
+        with open(file_path, "rb") as f:
+            video_bytes = f.read()
+        
+        b64_string = base64.b64encode(video_bytes).decode("utf-8")
+        
+        logger.debug(
+            f"Video encoded: {len(video_bytes)/1024:.1f}KB -> "
+            f"{len(b64_string)/1024:.1f}KB base64"
+        )
+        
+        return b64_string
+        
+    except FileNotFoundError:
+        logger.error(f"Video file not found: {file_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to encode video clip: {e}")
+        return None
+
+
+def decode_video_clip_b64(b64_string: str, output_path: str) -> bool:
+    """
+    Decode a base64 video string and save to file.
+    
+    Args:
+        b64_string: Base64-encoded video data
+        output_path: Path to save the decoded MP4 file
+        
+    Returns:
+        True if successful
+    """
+    try:
+        video_bytes = base64.b64decode(b64_string)
+        
+        with open(output_path, "wb") as f:
+            f.write(video_bytes)
+        
+        logger.debug(f"Video decoded: {len(video_bytes)/1024:.1f}KB -> {output_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to decode video clip: {e}")
+        return False
+
+
+def get_video_clip_size(file_path: str) -> Optional[int]:
+    """
+    Get the size of a video clip file in bytes.
+    
+    Args:
+        file_path: Path to video file
+        
+    Returns:
+        File size in bytes, or None if file doesn't exist
+    """
+    try:
+        return os.path.getsize(file_path)
+    except Exception:
         return None
