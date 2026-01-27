@@ -1,0 +1,54 @@
+# GPU Server Configuration
+# Facial Enrollment & Emotion Analysis Service
+
+server:
+  host: "0.0.0.0"
+  port: 5000
+  root_path: "/api"  # Base path for all endpoints
+  workers: 1  # Single worker for GPU memory management
+
+# Model configurations
+models:
+  # Facial embedding model (DeepFace/ArcFace)
+  embedding:
+    backend: "deepface"  # deepface, insightface
+    model_name: "ArcFace"
+    detector_backend: "yolov8"  # retinaface, mtcnn, yolov8
+    embedding_dim: 512
+    # GPU settings
+    enforce_detection: true
+    align: true
+  
+  # Emotion analysis VLM
+  emotion:
+    backend: "vllm"  # vllm, transformers
+    model_path: "/models/emotion-vlm"  # Path to VLM model
+    # Or use remote endpoint:
+    # llm_base_url: "http://localhost:8000"
+    # model_name: "emotion-analyzer"
+    max_tokens: 256
+    temperature: 0.1
+
+# Processing settings
+processing:
+  # Thumbnail generation
+  thumbnail:
+    size: [128, 128]
+    format: "JPEG"
+    quality: 85
+  
+  # Image preprocessing
+  input:
+    max_size: [640, 640]  # Resize large images
+    normalize: true
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+  # Graylog (optional)
+  graylog_host: null  # Set to enable
+  graylog_port: 12201
+  # Log viewer
+  enable_log_viewer: true
+  max_log_entries: 1000

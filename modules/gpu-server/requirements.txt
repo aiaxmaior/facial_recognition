@@ -1,0 +1,35 @@
+# GPU Server Dependencies
+
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# HTTP client
+httpx>=0.26.0
+
+# Image processing
+Pillow>=10.2.0
+numpy>=1.26.0
+
+# Facial recognition (DeepFace)
+deepface>=0.0.79
+# DeepFace backends (install as needed)
+# tensorflow>=2.15.0  # For GPU support: tensorflow[and-cuda]
+# torch>=2.1.0        # Alternative backend
+
+# Face detection backends (choose one or more)
+# opencv-python>=4.9.0
+# retinaface>=0.0.13
+# mtcnn>=0.1.1
+# ultralytics>=8.0.0  # For YOLOv8
+
+# Logging
+loguru>=0.7.2
+
+# Configuration
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+
+# Utilities
+python-multipart>=0.0.6

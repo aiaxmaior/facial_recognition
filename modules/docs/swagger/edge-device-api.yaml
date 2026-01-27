@@ -1,0 +1,1606 @@
+openapi: 3.0.3
+info:
+  title: Edge Device Communication API
+  description: |
+    API specification for Edge Device (Jetson Orin Nano) communication with the 
+    IoT Broker and Archive Server in the Facial Recognition System.
+    
+    ## Overview
+    
+    This specification covers:
+    - **Edge → IoT Broker**: Event submission, heartbeat, enrollment sync
+    - **IoT Broker → Edge**: WebSocket protocol (documented as x-websocket extension)
+    - **Edge → Archive Server**: Video clip upload, log batch shipping
+    
+    ## URL Structure
+    
+    Production URL pattern:
+    ```
+    https://{tenant}-bridge.qryde.net/iot-broker/api/data/...
+    ```
+    
+    Example: `https://acetaxi-bridge.qryde.net/iot-broker/api/data/devices`
+    
+    ## Device Authentication
+    
+    Edge devices authenticate using:
+    - `X-Device-ID` header: Unique device identifier
+    - `Authorization: Bearer {token}`: Device JWT token (optional for some endpoints)
+    
+    ## Message Format (Socket.IO)
+    
+    All event messages use the Socket.IO format with header + data structure:
+    ```json
+    [
+      { "header": { "to": "gateway", "from": "device-id", ... } },
+      { "data": { "event_id": "...", "event_type": "...", "debug": [], ... } }
+    ]
+    ```
+    
+  version: 1.2.0
+  contact:
+    name: API Support
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://{tenant}-bridge.qryde.net/iot-broker/api
+    description: IoT Broker Production (Multi-tenant)
+    variables:
+      tenant:
+        default: acetaxi
+        description: Tenant identifier
+        enum:
+          - acetaxi
+          - hbss
+          - amrtr
+  - url: http://localhost:3001
+    description: Local Development - Data Service
+  - url: https://archive.qryde.net/api/archive
+    description: Archive Server (placeholder)
+
+tags:
+  - name: Devices
+    description: Device registration and management
+  - name: Events
+    description: Event submission from edge devices
+  - name: Heartbeat
+    description: Device status and health reporting
+  - name: Enrollment Sync
+    description: Pull-based enrollment synchronization
+  - name: Archive - Clips
+    description: Video clip upload to archive server
+  - name: Archive - Logs
+    description: Log batch shipping to archive server
+  - name: WebSocket
+    description: |
+      WebSocket protocol documentation (not REST endpoints).
+      See x-websocket extension for message schemas.
+
+paths:
+  # ===========================================
+  # Device Management
+  # ===========================================
+  /data/devices:
+    get:
+      tags:
+        - Devices
+      summary: Get all devices
+      description: |
+        Retrieve a list of all registered devices for the tenant.
+        
+        Can filter by device capability type.
+      operationId: getDevices
+      parameters:
+        - name: device-type
+          in: query
+          required: false
+          description: Filter by device capability
+          schema:
+            type: string
+            enum:
+              - face_recognition
+              - emotion_monitoring
+      responses:
+        '200':
+          description: List of devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Device'
+              example:
+                - _id: "69709480c2011cbe0cc33a86"
+                  device_id: "cam-001"
+                  display_name: "Lobby Camera"
+                  location_label: "Main Entrance"
+                  capability: "face_recognition"
+                  status: "online"
+                  device_category: "camera"
+                  last_heartbeat_at: "2026-01-22T19:41:06.996Z"
+                  created_at: "2026-01-21T08:55:28.595Z"
+                  updated_at: "2026-01-22T19:41:06.996Z"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Devices
+      summary: Register a new device
+      description: |
+        Register a new IoT edge device.
+        
+        **Required fields:** device_id, display_name, capability
+        
+        After registration, send heartbeats to update status to "online".
+      operationId: registerDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceRegistration'
+            example:
+              device_id: "jetson-001"
+              display_name: "Jetson Orin Nano - Lobby"
+              location_label: "Main Entrance"
+              capability: "face_recognition"
+              status: "provisioning"
+              device_category: "camera"
+      responses:
+        '201':
+          description: Device registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Device already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /data/devices/{deviceId}:
+    get:
+      tags:
+        - Devices
+      summary: Get device by ID
+      description: Retrieve a specific device by its device ID.
+      operationId: getDeviceById
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+      responses:
+        '200':
+          description: Device details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags:
+        - Devices
+      summary: Update device
+      description: Update device information.
+      operationId: updateDevice
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceUpdate'
+      responses:
+        '200':
+          description: Device updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Device'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Heartbeat
+  # ===========================================
+  /data/devices/{deviceId}/heartbeat:
+    post:
+      tags:
+        - Heartbeat
+      summary: Send device heartbeat
+      description: |
+        Update device heartbeat timestamp and status.
+        
+        Should be called every 30 seconds.
+        
+        Response may indicate if configuration or enrollment updates are available.
+      operationId: sendHeartbeat
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+            example:
+              timestamp: "2026-01-22T10:30:00Z"
+              status: "operational"
+              metrics:
+                cpu_percent: 45.2
+                memory_percent: 62.1
+                temperature_c: 52.0
+      responses:
+        '200':
+          description: Heartbeat received
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Events (Socket.IO Format)
+  # ===========================================
+  /data/events:
+    get:
+      tags:
+        - Events
+      summary: Get events
+      description: Retrieve events with optional filtering.
+      operationId: getEvents
+      parameters:
+        - name: device_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - face_recognition
+              - emotion_monitoring
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: skip
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoredEvent'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Events
+      summary: Submit events (Socket.IO format)
+      description: |
+        Submit one or more events using the Socket.IO message format.
+        
+        Each message is an array of `[header, data]` where:
+        - **header**: Contains routing info (to, from, auth_token, command_id, timestamp)
+        - **data**: Contains the event payload with **required** `debug` field
+        
+        The `debug` field is used for Graylog logging and must always be present (empty array if no debug info).
+      operationId: createEvents
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventBatchSubmission'
+            examples:
+              faceRecognition:
+                summary: Face Recognition Event
+                value:
+                  device_id: "cam-001"
+                  timestamp: "2026-01-23T10:30:00.000Z"
+                  messages:
+                    - - header:
+                          to: "gateway"
+                          from: "cam-001"
+                          source_type: "device"
+                          auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          command_id: "event.log"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                      - data:
+                          event_id: "EV1-1706005800000-cam001"
+                          event_type: "face_recognition"
+                          person_name: "John Doe"
+                          person_id: "EMP-001"
+                          metadata:
+                            confidence: 0.95
+                            person_detected: true
+                            inference_ms: 42
+                          debug: []
+              emotionMonitoring:
+                summary: Emotion Monitoring Event
+                value:
+                  device_id: "cam-002"
+                  timestamp: "2026-01-23T10:30:00.000Z"
+                  messages:
+                    - - header:
+                          to: "gateway"
+                          from: "cam-002"
+                          source_type: "device"
+                          auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          command_id: "event.log"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                      - data:
+                          event_id: "EV2-1706005800000-cam002"
+                          event_type: "emotion_monitoring"
+                          person_id: "EMP-001"
+                          story: "A person entered the room looking happy and engaged in conversation with others..."
+                          metadata:
+                            duration: 15.0
+                            fps: 25
+                            resolution: "1280x720"
+                          debug:
+                            - level: "info"
+                              message: "Emotion event triggered by high valence score"
+                              timestamp: "2026-01-23T10:30:00.000Z"
+      responses:
+        '201':
+          description: Events created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Device not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /data/events/video:
+    post:
+      tags:
+        - Events
+      summary: Submit emotion event with video clip
+      description: |
+        Submit an emotion monitoring event with an attached video clip.
+        
+        The video clip is sent as a base64-encoded MP4 string within the JSON payload.
+        
+        **Video Specifications:**
+        - Duration: 15 seconds (10s pre-event + 5s post-event)
+        - Format: MP4 (H.264 or H.265)
+        - Encoding: Base64 string
+        
+        **Required Fields:**
+        - `debug`: Array for Graylog entries (can be empty)
+        
+        **Optional Fields:**
+        - `story`: VLM narrative description (~100 tokens)
+        - `video_clip`: Base64-encoded MP4
+        - `person_id`: Employee ID if person was identified
+      operationId: createVideoEvent
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoEventSubmission'
+            example:
+              device_id: "cam-002"
+              timestamp: "2026-01-23T10:30:00.000Z"
+              messages:
+                - - header:
+                      to: "gateway"
+                      from: "cam-002"
+                      source_type: "device"
+                      auth_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      command_id: "event.log"
+                      timestamp: "2026-01-23T10:30:00.000Z"
+                  - data:
+                      event_id: "cam-002_EV2-1706005800000"
+                      event_type: "emotion_monitoring"
+                      video_clip: "AAAAGGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE..."
+                      story: "A person entered the room looking happy and engaged in conversation with others..."
+                      metadata:
+                        duration: 15.0
+                        fps: 25
+                        resolution: "1280x720"
+                      debug:
+                        - level: "info"
+                          message: "Video clip captured for event cam-002_EV2-1706005800000"
+                          timestamp: "2026-01-23T10:30:00.000Z"
+                          clip_size_kb: 1024.5
+      responses:
+        '201':
+          description: Video event created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: Video clip too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Legacy Events (backward compatibility)
+  # ===========================================
+  /data/events:
+    get:
+      tags:
+        - Events
+      summary: Get events (legacy)
+      description: Retrieve events with optional filtering. Use /data/events for new implementations.
+      operationId: getEventsLegacy
+      deprecated: true
+      parameters:
+        - name: device_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - face_recognition
+              - emotion_monitoring
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: skip
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StoredEvent'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags:
+        - Events
+      summary: Submit event (legacy)
+      description: |
+        Submit a recognition or emotion event using the legacy flat format.
+        Use /data/events for new implementations with Socket.IO format.
+      operationId: createEventLegacy
+      deprecated: true
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventSubmissionLegacy'
+            example:
+              device_id: "cam-001"
+              event_type: "face_recognition"
+              person_name: "John Doe"
+              person_id: "EMP123456"
+              metadata:
+                distance: 0.28
+                confidence: 0.72
+                inference_ms: 42
+      responses:
+        '201':
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Device not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Enrollment
+  # ===========================================
+  /data/enrollment/publish:
+    post:
+      tags:
+        - Enrollment Sync
+      summary: Publish enrollment to devices
+      description: |
+        Publishes employee enrollment data (facial embedding) to all face recognition devices.
+        
+        **How it works:**
+        1. Accepts only employee_id in the request body
+        2. Retrieves enrollment record from database (including embedded_file)
+        3. Validates that embedded_file exists
+        4. Sends employee_id AND embedded_file to all face recognition devices via WebSocket
+      operationId: publishEnrollment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - employee_id
+              properties:
+                employee_id:
+                  type: string
+                  description: Employee/Person ID to publish
+                  example: "EMP123456"
+      responses:
+        '200':
+          description: Enrollment published to devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      employee_id:
+                        type: string
+                      devices_notified:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Employee enrollment not found or embedded_file missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /data/enrollments/sync:
+    get:
+      tags:
+        - Enrollment Sync
+      summary: Request enrollment sync
+      description: |
+        Pull enrollment updates since a known version.
+        
+        Returns incremental updates (additions and removals) unless `force_full=true`.
+      operationId: syncEnrollments
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - name: device_id
+          in: query
+          required: true
+          schema:
+            type: string
+            example: cam-001
+        - name: since_version
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+            default: ArcFace
+        - name: force_full
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Sync data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Archive - Clips
+  # ===========================================
+  /archive/clips:
+    post:
+      tags:
+        - Archive - Clips
+      summary: Upload video clip (multipart)
+      description: |
+        Upload event-triggered video clip with metadata using multipart form.
+        
+        **Note:** For inline video submission with events, use `/data/events/video` instead.
+        
+        **Clip Specifications:**
+        - Duration: 15 seconds (10s pre-event + 5s post-event)
+        - Codec: H.265 (preferred) or H.264
+        - Max size: 10 MB
+      operationId: uploadClip
+      servers:
+        - url: https://archive.qryde.net/api
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - $ref: '#/components/parameters/TenantIdHeader'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - metadata
+                - file
+              properties:
+                metadata:
+                  $ref: '#/components/schemas/ClipMetadata'
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Clip uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClipUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================
+  # Archive - Logs
+  # ===========================================
+  /archive/logs:
+    post:
+      tags:
+        - Archive - Logs
+      summary: Upload log batch
+      description: |
+        Upload batched log entries for archival.
+        
+        **Batching:** 100 entries OR 30 seconds OR 500 KB
+        
+        **Compression:** gzip recommended
+      operationId: uploadLogs
+      servers:
+        - url: https://archive.qryde.net/api
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - $ref: '#/components/parameters/TenantIdHeader'
+        - name: Content-Encoding
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: [gzip, identity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogBatchRequest'
+      responses:
+        '200':
+          description: Logs accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+# ===========================================
+# WebSocket Protocol
+# ===========================================
+x-websocket:
+  endpoint: wss://{tenant}-bridge.qryde.net/iot-broker/ws/device
+  description: |
+    Real-time bidirectional communication between IoT Broker and Edge Devices.
+    
+    ## Connection
+    ```
+    wss://acetaxi-bridge.qryde.net/iot-broker/ws/device?device_id=cam-001&token={token}
+    ```
+    
+    ## Message Types
+    - `register` - Device registration on connect
+    - `registered` - Registration acknowledgment  
+    - `enrollment_update` - New/updated enrollment with embedded_file
+    - `enrollment_delete` - Remove enrollment
+    - `command` - Device commands (restart, config update)
+    - `ack` - Message acknowledgment
+    - `ping`/`pong` - Keep-alive
+    
+  messages:
+    register:
+      direction: edge_to_broker
+      schema:
+        $ref: '#/components/schemas/WsRegisterMessage'
+    enrollment_update:
+      direction: broker_to_edge
+      schema:
+        $ref: '#/components/schemas/WsEnrollmentUpdateMessage'
+    command:
+      direction: broker_to_edge
+      schema:
+        $ref: '#/components/schemas/WsCommandMessage'
+
+components:
+  # ===========================================
+  # Parameters
+  # ===========================================
+  parameters:
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      description: Unique device identifier
+      schema:
+        type: string
+        example: cam-001
+
+    DeviceIdHeader:
+      name: X-Device-ID
+      in: header
+      required: false
+      description: Device identifier
+      schema:
+        type: string
+        example: cam-001
+
+    TenantIdHeader:
+      name: X-Tenant-ID
+      in: header
+      required: false
+      description: Tenant identifier
+      schema:
+        type: string
+        example: acetaxi
+
+  # ===========================================
+  # Responses
+  # ===========================================
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ===========================================
+  # Schemas
+  # ===========================================
+  schemas:
+    # ---- Device Schemas ----
+    Device:
+      type: object
+      properties:
+        _id:
+          type: string
+          description: MongoDB ObjectId
+          example: "69709480c2011cbe0cc33a86"
+        device_id:
+          type: string
+          example: "cam-001"
+        display_name:
+          type: string
+          example: "Lobby Camera"
+        location_label:
+          type: string
+          example: "Main Entrance"
+        capability:
+          type: string
+          enum: [face_recognition, emotion_monitoring]
+          example: "face_recognition"
+        status:
+          type: string
+          enum: [provisioning, online, offline]
+          example: "online"
+        device_category:
+          type: string
+          example: "camera"
+        last_heartbeat_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DeviceRegistration:
+      type: object
+      required:
+        - device_id
+        - display_name
+        - capability
+      properties:
+        device_id:
+          type: string
+          description: Unique device identifier
+          example: "jetson-001"
+        display_name:
+          type: string
+          description: Human-readable name
+          example: "Jetson Orin Nano - Lobby"
+        location_label:
+          type: string
+          example: "Main Entrance"
+        capability:
+          type: string
+          enum: [face_recognition, emotion_monitoring]
+          example: "face_recognition"
+        status:
+          type: string
+          enum: [provisioning, online, offline]
+          default: "provisioning"
+        device_category:
+          type: string
+          example: "camera"
+
+    DeviceUpdate:
+      type: object
+      properties:
+        display_name:
+          type: string
+        location_label:
+          type: string
+        capability:
+          type: string
+          enum: [face_recognition, emotion_monitoring]
+        status:
+          type: string
+          enum: [provisioning, online, offline]
+
+    # ---- Heartbeat Schemas ----
+    HeartbeatRequest:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [operational, degraded, error]
+          default: "operational"
+        metrics:
+          type: object
+          properties:
+            cpu_percent:
+              type: number
+            memory_percent:
+              type: number
+            gpu_memory_mb:
+              type: integer
+            temperature_c:
+              type: number
+            disk_percent:
+              type: number
+            uptime_seconds:
+              type: integer
+        cv_stats:
+          type: object
+          properties:
+            fps_current:
+              type: number
+            frames_processed:
+              type: integer
+            detections_count:
+              type: integer
+            recognitions_count:
+              type: integer
+            avg_inference_ms:
+              type: number
+        sync_status:
+          type: object
+          properties:
+            enrollment_version:
+              type: integer
+            enrolled_count:
+              type: integer
+
+    HeartbeatResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        last_heartbeat_at:
+          type: string
+          format: date-time
+        config_update_available:
+          type: boolean
+        enrollment_version:
+          type: integer
+
+    # ---- Socket.IO Message Schemas ----
+    MessageHeader:
+      type: object
+      description: Socket.IO message header for routing and authentication
+      required:
+        - to
+        - from
+        - command_id
+        - timestamp
+      properties:
+        to:
+          type: string
+          description: Message destination
+          example: "gateway"
+        from:
+          type: string
+          description: Device ID sending the message
+          example: "cam-001"
+        source_type:
+          type: string
+          description: Source type identifier
+          example: "device"
+        auth_token:
+          type: string
+          description: JWT or API key for authentication
+        command_id:
+          type: string
+          description: Command identifier
+          example: "event.log"
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp
+
+    DebugEntry:
+      type: object
+      description: Graylog debug/log entry
+      properties:
+        level:
+          type: string
+          enum: [debug, info, warning, error]
+          description: Log level
+        message:
+          type: string
+          description: Log message
+        timestamp:
+          type: string
+          format: date-time
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context data
+
+    # ---- Event Data Schemas ----
+    FaceRecognitionData:
+      type: object
+      description: Data payload for face recognition events
+      required:
+        - event_type
+        - person_name
+        - person_id
+        - debug
+      properties:
+        event_id:
+          type: string
+          description: Event ID (format EV1-{timestamp}-{device})
+          example: "EV1-1706005800000-cam001"
+        event_type:
+          type: string
+          enum: [face_recognition]
+        person_name:
+          type: string
+          description: Person's display name (REQUIRED, cannot be empty or "Unknown")
+          example: "John Doe"
+        person_id:
+          type: string
+          description: Employee/Person ID (REQUIRED)
+          example: "EMP-001"
+        metadata:
+          $ref: '#/components/schemas/FaceRecognitionMetadata'
+        debug:
+          type: array
+          description: Graylog debug entries (REQUIRED, empty array if no debug info)
+          items:
+            $ref: '#/components/schemas/DebugEntry'
+
+    EmotionMonitoringData:
+      type: object
+      description: Data payload for emotion monitoring events
+      required:
+        - event_type
+        - debug
+      properties:
+        event_id:
+          type: string
+          description: Event ID (format EV2-{timestamp}-{device} or {device_id}_{event_id})
+          example: "EV2-1706005800000-cam002"
+        event_type:
+          type: string
+          enum: [emotion_monitoring]
+        person_id:
+          type: string
+          description: Employee/Person ID if identified
+          example: "EMP-001"
+        story:
+          type: string
+          description: VLM narrative description (~100 tokens)
+          example: "A person entered the room looking happy and engaged in conversation with others..."
+        video_clip:
+          type: string
+          format: byte
+          description: Base64-encoded MP4 video clip
+        metadata:
+          $ref: '#/components/schemas/EmotionMonitoringMetadata'
+        debug:
+          type: array
+          description: Graylog debug entries (REQUIRED, empty array if no debug info)
+          items:
+            $ref: '#/components/schemas/DebugEntry'
+
+    FaceRecognitionMetadata:
+      type: object
+      properties:
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Recognition confidence score
+        person_detected:
+          type: boolean
+          description: Whether a person was detected
+          default: true
+        distance:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Cosine distance score
+        frames_tracked:
+          type: integer
+          minimum: 1
+          description: Frames tracked before validation
+        inference_ms:
+          type: integer
+          minimum: 0
+          description: Inference time in milliseconds
+        face_bbox:
+          type: array
+          items:
+            type: integer
+          description: Face bounding box [x, y, w, h]
+
+    EmotionMonitoringMetadata:
+      type: object
+      properties:
+        duration:
+          type: number
+          minimum: 0
+          description: Video duration in seconds
+          example: 15.0
+        frame_count:
+          type: integer
+          minimum: 1
+          description: Number of frames analyzed
+        fps:
+          type: integer
+          minimum: 1
+          description: Frames per second
+          example: 25
+        resolution:
+          type: string
+          description: Video resolution
+          example: "1280x720"
+        inference_ms:
+          type: integer
+          minimum: 0
+          description: Inference time in milliseconds
+
+    # ---- Event Submission Schemas ----
+    EventBatchSubmission:
+      type: object
+      description: Batch event submission using Socket.IO message format
+      required:
+        - device_id
+        - timestamp
+        - messages
+      properties:
+        device_id:
+          type: string
+          description: Device ID submitting events
+          example: "cam-001"
+        timestamp:
+          type: string
+          format: date-time
+          description: Submission timestamp
+        messages:
+          type: array
+          description: Array of Socket.IO messages, each containing [header, data]
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              oneOf:
+                - type: object
+                  properties:
+                    header:
+                      $ref: '#/components/schemas/MessageHeader'
+                - type: object
+                  properties:
+                    data:
+                      oneOf:
+                        - $ref: '#/components/schemas/FaceRecognitionData'
+                        - $ref: '#/components/schemas/EmotionMonitoringData'
+
+    VideoEventSubmission:
+      type: object
+      description: Video event submission with base64-encoded MP4 clip
+      required:
+        - device_id
+        - timestamp
+        - messages
+      properties:
+        device_id:
+          type: string
+          example: "cam-002"
+        timestamp:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            description: "[header, data] tuple where data contains video_clip"
+
+    EventSubmissionLegacy:
+      type: object
+      description: Legacy flat event submission format (deprecated)
+      required:
+        - device_id
+        - event_type
+      properties:
+        device_id:
+          type: string
+          example: "cam-001"
+        event_type:
+          type: string
+          enum: [face_recognition, emotion_monitoring]
+        person_name:
+          type: string
+          description: Required for face_recognition
+        person_id:
+          type: string
+          description: Employee ID
+        emotion_code:
+          type: string
+          description: Deprecated - use story field instead
+        metadata:
+          type: object
+          additionalProperties: true
+        event_timestamp:
+          type: string
+          format: date-time
+
+    StoredEvent:
+      type: object
+      properties:
+        _id:
+          type: string
+        device_id:
+          type: string
+        event_type:
+          type: string
+        person_name:
+          type: string
+        person_id:
+          type: string
+        story:
+          type: string
+          description: VLM narrative for emotion events
+        metadata:
+          type: object
+        debug:
+          type: array
+          items:
+            $ref: '#/components/schemas/DebugEntry'
+        event_timestamp:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    EventResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        event_id:
+          type: string
+        events_processed:
+          type: integer
+          description: Number of events processed in batch
+
+    # ---- Enrollment Schemas ----
+    EnrollmentRecord:
+      type: object
+      properties:
+        user_id:
+          type: string
+        embedding:
+          type: string
+          format: byte
+          description: Base64-encoded Float32 embedding
+        dim:
+          type: integer
+          example: 512
+        model:
+          type: string
+          example: "ArcFace"
+        display_name:
+          type: string
+
+    SyncResponse:
+      type: object
+      properties:
+        sync_version:
+          type: integer
+        total_enrolled:
+          type: integer
+        additions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnrollmentRecord'
+        removals:
+          type: array
+          items:
+            type: string
+        full_sync_required:
+          type: boolean
+        synced_at:
+          type: string
+          format: date-time
+
+    # ---- Archive Schemas ----
+    ClipMetadata:
+      type: object
+      required:
+        - clip_id
+        - device_id
+        - event_id
+        - capture_time
+      properties:
+        clip_id:
+          type: string
+        device_id:
+          type: string
+        tenant_id:
+          type: string
+        event_id:
+          type: string
+        event_type:
+          type: string
+        user_id:
+          type: string
+        capture_time:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+          example: 15
+        pre_event_seconds:
+          type: integer
+          example: 10
+        post_event_seconds:
+          type: integer
+          example: 5
+        codec:
+          type: string
+          enum: [h264, h265]
+        resolution:
+          type: string
+          example: "1280x720"
+        fps:
+          type: integer
+          example: 25
+        file_size_bytes:
+          type: integer
+        checksum_sha256:
+          type: string
+
+    ClipUploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        clip_id:
+          type: string
+        storage_path:
+          type: string
+        retention_days:
+          type: integer
+
+    LogEntry:
+      type: object
+      required:
+        - seq
+        - ts
+        - level
+        - logger
+        - message
+      properties:
+        seq:
+          type: integer
+        ts:
+          type: string
+          format: date-time
+        level:
+          type: string
+          enum: [DEBUG, INFO, WARNING, ERROR, CRITICAL]
+        logger:
+          type: string
+          enum: [capture, detection, recognition, validator, iot_client, sync, buffer, archive, system]
+        message:
+          type: string
+        context:
+          type: object
+          additionalProperties: true
+        event_id:
+          type: string
+        duration_ms:
+          type: integer
+
+    LogBatchRequest:
+      type: object
+      required:
+        - batch_id
+        - device_id
+        - logs
+      properties:
+        batch_id:
+          type: string
+        device_id:
+          type: string
+        tenant_id:
+          type: string
+        batch_info:
+          type: object
+          properties:
+            count:
+              type: integer
+            first_timestamp:
+              type: string
+              format: date-time
+            last_timestamp:
+              type: string
+              format: date-time
+            sequence_start:
+              type: integer
+            sequence_end:
+              type: integer
+            compressed:
+              type: boolean
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+
+    LogBatchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        batch_id:
+          type: string
+        accepted:
+          type: integer
+        last_sequence:
+          type: integer
+        next_expected:
+          type: integer
+
+    # ---- WebSocket Schemas ----
+    WsRegisterMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [register]
+        message_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          properties:
+            device_id:
+              type: string
+            device_type:
+              type: string
+            capability:
+              type: string
+            firmware_version:
+              type: string
+            enrollment_version:
+              type: integer
+
+    WsEnrollmentUpdateMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [enrollment_update]
+        message_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        require_ack:
+          type: boolean
+        payload:
+          type: object
+          properties:
+            action:
+              type: string
+              enum: [upsert]
+            employee_id:
+              type: string
+            person_name:
+              type: string
+            embedded_file:
+              type: string
+              format: byte
+            embedding_dim:
+              type: integer
+            model:
+              type: string
+            enrollment_version:
+              type: integer
+
+    WsCommandMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [command]
+        message_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        require_ack:
+          type: boolean
+        payload:
+          type: object
+          properties:
+            command:
+              type: string
+              enum: [restart_recognition, reload_config, force_sync, capture_diagnostic, set_log_level]
+            params:
+              type: object
+              additionalProperties: true
+
+    # ---- Error Schema ----
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+  # ===========================================
+  # Security
+  # ===========================================
+  securitySchemes:
+    DeviceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+    DeviceHeader:
+      type: apiKey
+      in: header
+      name: X-Device-ID
