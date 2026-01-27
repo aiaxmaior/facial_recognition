@@ -307,14 +307,15 @@
         }
       }
     },
-    "/v1/events": {
+    "/data/events": {
       "get": {
         "tags": [
           "Events"
         ],
-        "summary": "Get events",
-        "description": "Retrieve events with optional filtering.",
-        "operationId": "getEvents",
+        "summary": "Get events (legacy)",
+        "description": "Retrieve events with optional filtering. Use /data/events for new implementations.",
+        "operationId": "getEventsLegacy",
+        "deprecated": true,
         "parameters": [
           {
             "name": "device_id",
@@ -378,9 +379,10 @@
         "tags": [
           "Events"
         ],
-        "summary": "Submit events (Socket.IO format)",
-        "description": "Submit one or more events using the Socket.IO message format.\n\nEach message is an array of `[header, data]` where:\n- **header**: Contains routing info (to, from, auth_token, command_id, timestamp)\n- **data**: Contains the event payload with **required** `debug` field\n\nThe `debug` field is used for Graylog logging and must always be present (empty array if no debug info).\n",
-        "operationId": "createEvents",
+        "summary": "Submit event (legacy)",
+        "description": "Submit a recognition or emotion event using the legacy flat format.\nUse /data/events for new implementations with Socket.IO format.\n",
+        "operationId": "createEventLegacy",
+        "deprecated": true,
         "parameters": [
           {
             "$ref": "#/components/parameters/DeviceIdHeader"
@@ -391,84 +393,17 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EventBatchSubmission"
+                "$ref": "#/components/schemas/EventSubmissionLegacy"
               },
-              "examples": {
-                "faceRecognition": {
-                  "summary": "Face Recognition Event",
-                  "value": {
-                    "device_id": "cam-001",
-                    "timestamp": "2026-01-23T10:30:00.000Z",
-                    "messages": [
-                      [
-                        {
-                          "header": {
-                            "to": "gateway",
-                            "from": "cam-001",
-                            "source_type": "device",
-                            "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                            "command_id": "event.log",
-                            "timestamp": "2026-01-23T10:30:00.000Z"
-                          }
-                        },
-                        {
-                          "data": {
-                            "event_id": "EV1-1706005800000-cam001",
-                            "event_type": "face_recognition",
-                            "person_name": "John Doe",
-                            "person_id": "EMP-001",
-                            "metadata": {
-                              "confidence": 0.95,
-                              "person_detected": true,
-                              "inference_ms": 42
-                            },
-                            "debug": []
-                          }
-                        }
-                      ]
-                    ]
-                  }
-                },
-                "emotionMonitoring": {
-                  "summary": "Emotion Monitoring Event",
-                  "value": {
-                    "device_id": "cam-002",
-                    "timestamp": "2026-01-23T10:30:00.000Z",
-                    "messages": [
-                      [
-                        {
-                          "header": {
-                            "to": "gateway",
-                            "from": "cam-002",
-                            "source_type": "device",
-                            "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                            "command_id": "event.log",
-                            "timestamp": "2026-01-23T10:30:00.000Z"
-                          }
-                        },
-                        {
-                          "data": {
-                            "event_id": "EV2-1706005800000-cam002",
-                            "event_type": "emotion_monitoring",
-                            "person_id": "EMP-001",
-                            "story": "A person entered the room looking happy and engaged in conversation with others...",
-                            "metadata": {
-                              "duration": 15.0,
-                              "fps": 25,
-                              "resolution": "1280x720"
-                            },
-                            "debug": [
-                              {
-                                "level": "info",
-                                "message": "Emotion event triggered by high valence score",
-                                "timestamp": "2026-01-23T10:30:00.000Z"
-                              }
-                            ]
-                          }
-                        }
-                      ]
-                    ]
-                  }
+              "example": {
+                "device_id": "cam-001",
+                "event_type": "face_recognition",
+                "person_name": "John Doe",
+                "person_id": "EMP123456",
+                "metadata": {
+                  "distance": 0.28,
+                  "confidence": 0.72,
+                  "inference_ms": 42
                 }
               }
             }
@@ -476,7 +411,7 @@
         },
         "responses": {
           "201": {
-            "description": "Events created",
+            "description": "Event created",
             "content": {
               "application/json": {
                 "schema": {
@@ -504,7 +439,7 @@
         }
       }
     },
-    "/v1/events/video": {
+    "/data/events/video": {
       "post": {
         "tags": [
           "Events"
@@ -582,138 +517,6 @@
           },
           "413": {
             "description": "Video clip too large",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      }
-    },
-    "/data/events": {
-      "get": {
-        "tags": [
-          "Events"
-        ],
-        "summary": "Get events (legacy)",
-        "description": "Retrieve events with optional filtering. Use /v1/events for new implementations.",
-        "operationId": "getEventsLegacy",
-        "deprecated": true,
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "event_type",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "face_recognition",
-                "emotion_monitoring"
-              ]
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 100
-            }
-          },
-          {
-            "name": "skip",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of events",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/StoredEvent"
-                  }
-                }
-              }
-            }
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "Events"
-        ],
-        "summary": "Submit event (legacy)",
-        "description": "Submit a recognition or emotion event using the legacy flat format.\nUse /v1/events for new implementations with Socket.IO format.\n",
-        "operationId": "createEventLegacy",
-        "deprecated": true,
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/DeviceIdHeader"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EventSubmissionLegacy"
-              },
-              "example": {
-                "device_id": "cam-001",
-                "event_type": "face_recognition",
-                "person_name": "John Doe",
-                "person_id": "EMP123456",
-                "metadata": {
-                  "distance": 0.28,
-                  "confidence": 0.72,
-                  "inference_ms": 42
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Event created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EventResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "404": {
-            "description": "Device not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -880,7 +683,7 @@
           "Archive - Clips"
         ],
         "summary": "Upload video clip (multipart)",
-        "description": "Upload event-triggered video clip with metadata using multipart form.\n\n**Note:** For inline video submission with events, use `/v1/events/video` instead.\n\n**Clip Specifications:**\n- Duration: 15 seconds (10s pre-event + 5s post-event)\n- Codec: H.265 (preferred) or H.264\n- Max size: 10 MB\n",
+        "description": "Upload event-triggered video clip with metadata using multipart form.\n\n**Note:** For inline video submission with events, use `/data/events/video` instead.\n\n**Clip Specifications:**\n- Duration: 15 seconds (10s pre-event + 5s post-event)\n- Codec: H.265 (preferred) or H.264\n- Max size: 10 MB\n",
         "operationId": "uploadClip",
         "servers": [
           {

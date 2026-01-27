@@ -149,16 +149,18 @@ All events use a header + data structure:
 
 ## API Endpoints
 
-### IoT Broker (v1)
+### IoT Broker
+
+Base URL: `https://{tenant}-bridge.qryde.net/iot-broker/api`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/events` | POST | Submit events (Socket.IO format) |
-| `/api/v1/events/video` | POST | Submit emotion event with video clip |
-| `/api/data/devices` | GET/POST | Device registration |
-| `/api/data/devices/{id}/heartbeat` | POST | Device heartbeat |
-| `/api/data/enrollment/publish` | POST | Publish enrollment to devices |
-| `/api/data/enrollments/sync` | GET | Pull enrollment updates |
+| `/data/events` | POST | Submit events (Socket.IO format) |
+| `/data/events/video` | POST | Submit emotion event with video clip |
+| `/data/devices` | GET/POST | Device registration |
+| `/data/devices/{id}/heartbeat` | POST | Device heartbeat |
+| `/data/enrollment/publish` | POST | Publish enrollment to devices |
+| `/data/enrollments/sync` | GET | Pull enrollment updates |
 
 ### GPU Server
 

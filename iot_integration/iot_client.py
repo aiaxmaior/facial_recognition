@@ -254,7 +254,7 @@ class IoTClient:
         if not events:
             return
         
-        url = f"{self.config.broker_url}/api/v1/events"
+        url = f"{self.config.broker_url}/data/events"
         
         # Build payload with Socket.IO message format
         # Each event is [header, data] structure
@@ -339,7 +339,7 @@ class IoTClient:
                 face_bbox=face_bbox,
             )
         
-        url = f"{self.config.broker_url}/api/v1/events"
+        url = f"{self.config.broker_url}/data/events"
         
         # Build Socket.IO message format
         if hasattr(event, 'to_broker_message'):
@@ -405,7 +405,7 @@ class IoTClient:
         Returns:
             SyncResponse with updates, or None on failure
         """
-        url = f"{self.config.broker_url}/api/v1/enrollments/sync"
+        url = f"{self.config.broker_url}/data/enrollments/sync"
         
         request = SyncRequest(
             device_id=self.config.device_id,
@@ -482,7 +482,7 @@ class IoTClient:
         Returns:
             True if sent successfully
         """
-        url = f"{self.config.broker_url}/api/v1/events/video"
+        url = f"{self.config.broker_url}/data/events/video"
         timestamp = datetime.utcnow().isoformat() + "Z"
         
         # Build Socket.IO message format
@@ -549,7 +549,7 @@ class IoTClient:
         Returns:
             True if successful
         """
-        url = f"{self.config.broker_url}/api/v1/devices/{self.config.device_id}/heartbeat"
+        url = f"{self.config.broker_url}/data/devices/{self.config.device_id}/heartbeat"
         
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
