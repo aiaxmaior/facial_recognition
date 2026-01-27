@@ -6,6 +6,9 @@
 enrolled_faces/
 face_repo/
 
+# Archive of original structure (pre-modular reorganization)
+archive/
+
 # =============================================================================
 # Python
 # =============================================================================
