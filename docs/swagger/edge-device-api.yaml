@@ -257,9 +257,9 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   # ===========================================
-  # Events (v1 - Socket.IO Format)
+  # Events (Socket.IO Format)
   # ===========================================
-  /v1/events:
+  /data/events:
     get:
       tags:
         - Events
@@ -393,7 +393,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
-  /v1/events/video:
+  /data/events/video:
     post:
       tags:
         - Events
@@ -475,7 +475,7 @@ paths:
       tags:
         - Events
       summary: Get events (legacy)
-      description: Retrieve events with optional filtering. Use /v1/events for new implementations.
+      description: Retrieve events with optional filtering. Use /data/events for new implementations.
       operationId: getEventsLegacy
       deprecated: true
       parameters:
@@ -522,7 +522,7 @@ paths:
       summary: Submit event (legacy)
       description: |
         Submit a recognition or emotion event using the legacy flat format.
-        Use /v1/events for new implementations with Socket.IO format.
+        Use /data/events for new implementations with Socket.IO format.
       operationId: createEventLegacy
       deprecated: true
       parameters:
@@ -679,7 +679,7 @@ paths:
       description: |
         Upload event-triggered video clip with metadata using multipart form.
         
-        **Note:** For inline video submission with events, use `/v1/events/video` instead.
+        **Note:** For inline video submission with events, use `/data/events/video` instead.
         
         **Clip Specifications:**
         - Duration: 15 seconds (10s pre-event + 5s post-event)
