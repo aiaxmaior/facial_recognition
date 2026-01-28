@@ -44,8 +44,9 @@ mkdir -p "$INSTALL_DIR/config"
 
 # Copy application files
 echo -e "${YELLOW}Copying application files...${NC}"
-cp "$PROJECT_DIR/main.py" "$INSTALL_DIR/facial_recognition/"
-cp "$PROJECT_DIR/video_buffer.py" "$INSTALL_DIR/facial_recognition/"
+cp "$PROJECT_DIR/src/main.py" "$INSTALL_DIR/facial_recognition/"
+cp "$PROJECT_DIR/src/video_buffer.py" "$INSTALL_DIR/facial_recognition/"
+cp "$PROJECT_DIR/src/device_ctl.py" "$INSTALL_DIR/facial_recognition/"
 
 # Copy iot_integration module
 if [ -d "$(dirname "$PROJECT_DIR")/iot_integration" ]; then
@@ -63,7 +64,7 @@ if [ ! -f "$INSTALL_DIR/config/device_config.json" ]; then
     "device_id": "jetson-001",
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "camera": {
-        "rtsp_url": "rtsp://admin:PASSWORD@10.42.0.159/Preview_01_sub",
+        "rtsp_url": "rtsp://admin:PASSWORD@CAMERA_IP/Preview_01_sub",
         "fps": 25
     },
     "recognition": {
@@ -125,15 +126,19 @@ echo "Application dir: $INSTALL_DIR"
 echo "Config file: $INSTALL_DIR/config/device_config.json"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
-echo "1. Edit config: sudo nano $INSTALL_DIR/config/device_config.json"
-echo "   - Set your camera RTSP URL and password"
-echo "   - Set your device_id"
+echo "1. Configure camera (auto-discovery):"
+echo "   cd $INSTALL_DIR/facial_recognition && source venv/bin/activate"
+echo "   python device_ctl.py camera"
 echo ""
-echo "2. Enable and start the service:"
+echo "2. Register device with IoT broker:"
+echo "   python device_ctl.py register"
+echo "   python device_ctl.py heartbeat"
+echo ""
+echo "3. Enable and start the service:"
 echo "   sudo systemctl enable qraie-facial"
 echo "   sudo systemctl start qraie-facial"
 echo ""
-echo "3. Check status:"
+echo "4. Check status:"
 echo "   sudo systemctl status qraie-facial"
 echo "   sudo journalctl -u qraie-facial -f"
-echo ""
+echo 

@@ -3,7 +3,7 @@
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "api_key": null,
     
-    "rtsp_url": "rtsp://admin:password@192.168.68.100:554/stream1",
+    "rtsp_url": "rtsp://admin:PASSWORD@192.168.13.119/Preview_01_sub",
     
     "heartbeat": {
         "interval_seconds": 30

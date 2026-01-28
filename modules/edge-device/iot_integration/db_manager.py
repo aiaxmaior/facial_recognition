@@ -244,6 +244,11 @@ class DatabaseManager:
             finally:
                 conn.close()
     
+    # Alias for backward compatibility
+    def get_all_embeddings(self, model_filter: str = None) -> Dict[str, np.ndarray]:
+        """Alias for get_all_enrollments()."""
+        return self.get_all_enrollments(model_filter)
+    
     def get_all_enrollment_records(self) -> List[EnrollmentRecord]:
         """
         Get all enrollment records with full details.
@@ -665,3 +670,7 @@ class DatabaseManager:
                 return deleted
             finally:
                 conn.close()
+
+
+# Alias for backward compatibility
+EnrollmentDBManager = DatabaseManager

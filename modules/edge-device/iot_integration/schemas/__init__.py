@@ -13,7 +13,6 @@ from .event_schemas import (
     FacialIdEvent,
     EmotionEvent,
     EventMetadata,
-    EmotionCode,
 )
 from .sync_schemas import (
     SyncRequest,
@@ -33,7 +32,6 @@ __all__ = [
     "FacialIdEvent",
     "EmotionEvent",
     "EventMetadata",
-    "EmotionCode",
     # Sync schemas
     "SyncRequest",
     "SyncResponse",
