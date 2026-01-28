@@ -285,7 +285,7 @@ create_default_config() {
     "archive_url": "https://archive.qryde.net/api/archive",
     
     "camera": {
-        "rtsp_url": "rtsp://admin:PASSWORD@10.42.0.159/Preview_01_sub",
+        "rtsp_url": "rtsp://admin:PASSWORD@CAMERA_IP/Preview_01_sub",
         "resolution": [1280, 720],
         "fps": 25
     },

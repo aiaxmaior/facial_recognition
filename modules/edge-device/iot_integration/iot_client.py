@@ -531,6 +531,53 @@ class IoTClient:
             return False
     
     # =========================================================================
+    # Device Registration
+    # =========================================================================
+    
+    def register_device(
+        self,
+        display_name: str = None,
+        capability: str = "face_recognition",
+        status: str = "provisioning",
+    ) -> bool:
+        """
+        Register device with IoT broker.
+        
+        Args:
+            display_name: Human-readable device name
+            capability: Device capability type
+            status: Initial device status
+            
+        Returns:
+            True if registered successfully
+        """
+        url = f"{self.config.broker_url}/data/devices"
+        
+        payload = {
+            "device_id": self.config.device_id,
+            "display_name": display_name or self.config.device_id,
+            "capability": capability,
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+        
+        try:
+            response = self._session.post(
+                url,
+                json=payload,
+                timeout=self.config.timeout_seconds,
+                verify=self.config.verify_ssl,
+            )
+            response.raise_for_status()
+            
+            logger.info(f"Device registered: {self.config.device_id}")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Device registration failed: {e}")
+            return False
+    
+    # =========================================================================
     # Heartbeat
     # =========================================================================
     

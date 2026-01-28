@@ -25,7 +25,7 @@ from .schemas import (
 from .event_validator import EventValidator
 from .iot_client import IoTClient, IoTClientConfig
 from .sync_manager import SyncManager
-from .db_manager import DatabaseManager
+from .db_manager import DatabaseManager, EnrollmentDBManager
 from .image_utils import compress_image_for_event
 from .adapter import IoTAdapter, LiveStreamWithIoT
 
@@ -45,6 +45,7 @@ __all__ = [
     "IoTClientConfig",
     "SyncManager",
     "DatabaseManager",
+    "EnrollmentDBManager",
     "compress_image_for_event",
     # Adapter for existing system
     "IoTAdapter",
