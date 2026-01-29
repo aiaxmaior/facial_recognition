@@ -1,0 +1,61 @@
+# Facial Recognition System Requirements
+# Install with: pip install -r requirements.txt
+
+# Core facial recognition
+deepface>=0.0.90
+tensorflow>=2.20.0
+tf-keras>=2.20.0
+
+# Image processing
+opencv-python>=4.8.0
+numpy>=1.23.0
+
+# Face mesh / pose detection (for guided enrollment)
+mediapipe>=0.10.18
+
+# Protobuf (let pip resolve compatible version with TensorFlow/MediaPipe)
+protobuf>=4.25.0
+
+# Data handling
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Web interface
+gradio>=4.0.0
+
+# Audio notifications (for guided enrollment)
+pygame>=2.5.0
+
+# Serialization
+# pickle, threading, time, os are built-in - no install needed
+
+# =============================================================================
+# DeepStream Dependencies (Jetson/NVIDIA Only)
+# =============================================================================
+# These are NOT pip packages - they must be installed via apt on Jetson devices
+# 
+# Required system packages (install via apt):
+#   sudo apt update
+#   sudo apt install -y \
+#       deepstream-6.3 \
+#       python3-gi \
+#       python3-gst-1.0 \
+#       gir1.2-gst-rtsp-server-1.0 \
+#       libgstreamer1.0-dev \
+#       libgstreamer-plugins-base1.0-dev
+#
+# PyDS (DeepStream Python bindings):
+#   The pyds module comes with DeepStream SDK on Jetson
+#   Location: /opt/nvidia/deepstream/deepstream/lib/
+#   
+#   Add to PYTHONPATH:
+#   export PYTHONPATH=$PYTHONPATH:/opt/nvidia/deepstream/deepstream/lib/
+#
+# Verify installation:
+#   python3 -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; print('GStreamer OK')"
+#   python3 -c "import pyds; print('PyDS OK')"
+#
+# For x86 systems with NVIDIA GPU:
+#   Download DeepStream SDK from NVIDIA Developer
+#   https://developer.nvidia.com/deepstream-sdk
+# =============================================================================
