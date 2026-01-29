@@ -159,31 +159,120 @@ def cmd_heartbeat(config: dict, args):
 
 
 def cmd_status(config: dict, args):
-    """Show device configuration status."""
-    print("\n=== Device Configuration ===")
-    print(f"Device ID:  {config.get('device_id', 'NOT SET')}")
-    print(f"Broker URL: {config.get('broker_url', 'NOT SET')}")
+    """Show device configuration and connectivity status."""
+    import requests
+    
+    print("\n" + "=" * 50)
+    print("  QRaie Edge Device Status")
+    print("=" * 50)
+    
+    # === Configuration ===
+    print("\n[Configuration]")
+    device_id = config.get('device_id', 'NOT SET')
+    broker_url = config.get('broker_url', 'NOT SET')
+    print(f"  Device ID:  {device_id}")
+    print(f"  Broker URL: {broker_url}")
     
     camera = config.get('camera', {})
-    rtsp = camera.get('rtsp_url', 'NOT SET')
+    rtsp = camera.get('rtsp_url') or config.get('rtsp_url', 'NOT SET')
     # Hide password in URL
     if '@' in rtsp:
-        rtsp = rtsp.split('@')[-1]
-        rtsp = f"rtsp://***@{rtsp}"
-    print(f"Camera:     {rtsp}")
+        rtsp_display = rtsp.split('@')[-1]
+        rtsp_display = f"rtsp://***@{rtsp_display}"
+    else:
+        rtsp_display = rtsp
+    print(f"  Camera:     {rtsp_display}")
     
-    print("\n=== System Metrics ===")
+    # Check for placeholders
+    if "PASSWORD" in rtsp:
+        print("              ^ WARNING: Password placeholder not replaced")
+    if "CAMERA_IP" in rtsp:
+        print("              ^ WARNING: Camera IP placeholder not replaced")
+    
+    # === System Metrics ===
+    print("\n[System Metrics]")
     metrics = get_system_metrics()
-    print(f"CPU:        {metrics['cpu_percent']:.1f}%")
-    print(f"Memory:     {metrics['memory_percent']:.1f}%")
-    print(f"Temperature:{metrics['temperature_c']:.1f}°C")
+    print(f"  CPU:         {metrics['cpu_percent']:.1f}%")
+    print(f"  Memory:      {metrics['memory_percent']:.1f}%")
+    print(f"  Temperature: {metrics['temperature_c']:.1f}°C")
     
+    # === API Connectivity ===
+    print("\n[API Connectivity]")
+    if broker_url and broker_url != 'NOT SET':
+        # Test broker reachability
+        try:
+            response = requests.get(
+                f"{broker_url}/health",
+                timeout=5,
+                verify=True
+            )
+            if response.status_code == 200:
+                print(f"  Broker:      ONLINE (HTTP {response.status_code})")
+            else:
+                print(f"  Broker:      REACHABLE (HTTP {response.status_code})")
+        except requests.exceptions.ConnectionError:
+            print("  Broker:      OFFLINE (connection refused)")
+        except requests.exceptions.Timeout:
+            print("  Broker:      TIMEOUT (no response)")
+        except Exception as e:
+            print(f"  Broker:      ERROR ({e})")
+        
+        # Test heartbeat endpoint
+        try:
+            response = requests.post(
+                f"{broker_url}/data/devices/{device_id}/heartbeat",
+                json={"status": "ping", "metrics": metrics},
+                timeout=5,
+                headers={"X-Device-ID": device_id},
+            )
+            if response.status_code == 200:
+                print(f"  Heartbeat:   OK (HTTP {response.status_code})")
+            else:
+                print(f"  Heartbeat:   HTTP {response.status_code}")
+        except requests.exceptions.ConnectionError:
+            print("  Heartbeat:   FAILED (connection refused)")
+        except requests.exceptions.Timeout:
+            print("  Heartbeat:   TIMEOUT")
+        except Exception as e:
+            print(f"  Heartbeat:   ERROR ({e})")
+    else:
+        print("  Broker:      NOT CONFIGURED")
+        print("  Heartbeat:   NOT CONFIGURED")
+    
+    # === Camera Connectivity ===
+    print("\n[Camera Connectivity]")
+    if rtsp and rtsp != 'NOT SET' and "CAMERA_IP" not in rtsp:
+        # Extract IP from RTSP URL
+        try:
+            # Parse rtsp://user:pass@ip/path
+            import re
+            match = re.search(r'@([0-9.]+)', rtsp)
+            if match:
+                camera_ip = match.group(1)
+                # Ping test
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex((camera_ip, 554))
+                sock.close()
+                if result == 0:
+                    print(f"  RTSP Port:   OPEN ({camera_ip}:554)")
+                else:
+                    print(f"  RTSP Port:   CLOSED ({camera_ip}:554)")
+            else:
+                print("  RTSP Port:   Could not parse IP from URL")
+        except Exception as e:
+            print(f"  RTSP Port:   ERROR ({e})")
+    else:
+        print("  RTSP Port:   NOT CONFIGURED")
+    
+    print("\n" + "=" * 50 + "\n")
     return 0
 
 
-def scan_for_rtsp_cameras(subnet: str = None, timeout: float = 0.5) -> list:
+def scan_for_rtsp_cameras(subnet: str = None, timeout: float = 0.2) -> list:
     """
     Scan local network for devices with RTSP port 554 open.
+    Uses parallel scanning for speed.
     
     Args:
         subnet: Subnet to scan (e.g., "192.168.13"). Auto-detected if None.
@@ -192,6 +281,8 @@ def scan_for_rtsp_cameras(subnet: str = None, timeout: float = 0.5) -> list:
     Returns:
         List of IP addresses with port 554 open.
     """
+    import concurrent.futures
+    
     # Auto-detect subnet from default interface
     if subnet is None:
         try:
@@ -206,19 +297,26 @@ def scan_for_rtsp_cameras(subnet: str = None, timeout: float = 0.5) -> list:
     
     logger.info(f"Scanning {subnet}.0/24 for RTSP cameras (port 554)...")
     
-    found = []
-    for i in range(1, 255):
-        ip = f"{subnet}.{i}"
+    def check_port(ip):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             result = sock.connect_ex((ip, 554))
             sock.close()
-            if result == 0:
-                found.append(ip)
-                logger.info(f"  Found RTSP device: {ip}")
+            return ip if result == 0 else None
         except Exception:
-            pass
+            return None
+    
+    found = []
+    ips = [f"{subnet}.{i}" for i in range(1, 255)]
+    
+    # Parallel scan with thread pool
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        results = executor.map(check_port, ips)
+        for result in results:
+            if result:
+                found.append(result)
+                logger.info(f"  Found RTSP device: {result}")
     
     return found
 
@@ -399,13 +497,139 @@ def cmd_camera(config: dict, args):
     return 0
 
 
+def cmd_run(config: dict, args):
+    """
+    Full startup: check camera, register, heartbeat, launch recognition.
+    
+    This is the one-stop command to get everything running.
+    """
+    import subprocess
+    import time
+    
+    print("\n" + "=" * 60)
+    print("  QRaie Edge Device - Full Startup")
+    print("=" * 60 + "\n")
+    
+    # Step 1: Check configuration
+    print("[1/5] Checking configuration...")
+    device_id = config.get("device_id", "unknown-device")
+    broker_url = config.get("broker_url")
+    
+    # Get RTSP URL from either flat or nested config
+    camera_config = config.get("camera", {})
+    rtsp_url = camera_config.get("rtsp_url") or config.get("rtsp_url")
+    
+    print(f"      Device ID: {device_id}")
+    print(f"      Broker: {broker_url}")
+    
+    if not broker_url:
+        print("\n      ERROR: broker_url not configured!")
+        return 1
+    
+    # Step 2: Check/configure camera
+    print("\n[2/5] Checking camera...")
+    
+    # Check if we have a real IP configured (not placeholder)
+    has_real_ip = rtsp_url and "CAMERA_IP" not in rtsp_url
+    needs_password = rtsp_url and "PASSWORD" in rtsp_url
+    
+    if not has_real_ip:
+        # No IP configured - need to scan
+        print("      No camera IP configured. Running auto-discovery...")
+        cameras = scan_for_rtsp_cameras()
+        if cameras:
+            print(f"      Found {len(cameras)} camera(s): {cameras}")
+            print("      Run 'python device_ctl.py camera' to configure.")
+            if not args.skip_camera:
+                return 1
+        else:
+            print("      No cameras found on network!")
+            if not args.skip_camera:
+                return 1
+    elif needs_password:
+        # IP is configured but password is placeholder
+        display_url = rtsp_url.split('@')[-1] if '@' in rtsp_url else rtsp_url
+        print(f"      Camera IP: {display_url}")
+        print("      WARNING: Password not set (still 'PASSWORD' placeholder)")
+        print("      Run 'python device_ctl.py camera' to set credentials.")
+        if not args.skip_camera:
+            return 1
+    else:
+        # Fully configured
+        display_url = rtsp_url.split('@')[-1] if '@' in rtsp_url else rtsp_url
+        print(f"      Camera: rtsp://***@{display_url}")
+    
+    # Step 3: Register device
+    print("\n[3/5] Registering device...")
+    iot_config = IoTClientConfig(
+        device_id=device_id,
+        broker_url=broker_url,
+    )
+    client = IoTClient(iot_config)
+    client.start()
+    
+    if client.register_device(display_name=device_id, capability="face_recognition", status="online"):
+        print("      Device registered successfully")
+    else:
+        print("      Registration failed (may already be registered)")
+    
+    # Step 4: Send heartbeat
+    print("\n[4/5] Sending heartbeat...")
+    metrics = get_system_metrics()
+    if client.send_heartbeat(metrics=metrics):
+        print(f"      Heartbeat sent (CPU: {metrics['cpu_percent']:.1f}%, Temp: {metrics['temperature_c']:.1f}°C)")
+    else:
+        print("      Heartbeat failed!")
+        client.stop()
+        return 1
+    
+    client.stop()
+    
+    # Step 5: Launch recognition service
+    print("\n[5/5] Launching facial recognition service...")
+    print("=" * 60)
+    print("  Starting main recognition loop (Ctrl+C to stop)")
+    print("=" * 60 + "\n")
+    
+    # Get the directory where this script is located
+    script_dir = Path(__file__).parent
+    main_py = script_dir / "main.py"
+    
+    if not main_py.exists():
+        print(f"ERROR: main.py not found at {main_py}")
+        return 1
+    
+    # Launch main.py in the same process context
+    try:
+        # Import and run main directly for better integration
+        sys.path.insert(0, str(script_dir))
+        
+        # Set config path environment variable
+        os.environ["CONFIG_PATH"] = args.config
+        
+        # Run main.py as subprocess to keep it clean
+        result = subprocess.run(
+            [sys.executable, str(main_py), "--config", args.config],
+            cwd=str(script_dir.parent),
+        )
+        return result.returncode
+        
+    except KeyboardInterrupt:
+        print("\n\nService stopped by user.")
+        return 0
+    except Exception as e:
+        print(f"\nERROR: Failed to launch service: {e}")
+        return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="QRaie Device Control CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python device_ctl.py register            # Register device
+  python device_ctl.py run                 # Full startup (recommended)
+  python device_ctl.py register            # Register device only
   python device_ctl.py heartbeat           # Send single heartbeat
   python device_ctl.py heartbeat --loop    # Continuous heartbeat (30s)
   python device_ctl.py status              # Show status
@@ -413,14 +637,19 @@ Examples:
         """
     )
     
-
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
     parser.add_argument(
         "--config",
         type=str,
         default=os.environ.get("CONFIG_PATH", "/home/qdrive/facial_recognition/modules/edge-device/config/config.json"),
         help="Path to device configuration file"
     )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # run command (main entry point - does everything)
+    run_parser = subparsers.add_parser("run", help="Full startup: register, heartbeat, launch service")
+    run_parser.add_argument("--skip-camera", action="store_true",
+                            help="Skip camera check (for testing)")
     
     # register command
     reg_parser = subparsers.add_parser("register", help="Register device with broker")
@@ -455,13 +684,15 @@ Examples:
     # Other commands need config
     if not os.path.exists(args.config):
         logger.error(f"Config file not found: {args.config}")
-        logger.info("Create config at: /opt/qraie/config/device_config.json")
+        logger.info(f"Expected config at: {args.config}")
         return 1
     
     config = load_config(args.config)
     
     # Execute command
-    if args.command == "register":
+    if args.command == "run":
+        return cmd_run(config, args)
+    elif args.command == "register":
         return cmd_register(config, args)
     elif args.command == "heartbeat":
         return cmd_heartbeat(config, args)

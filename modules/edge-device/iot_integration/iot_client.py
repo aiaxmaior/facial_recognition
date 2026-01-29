@@ -49,6 +49,9 @@ class IoTClientConfig:
     # Event queue settings
     max_queue_size: int = 1000
     
+    # Payload format: "wrapped" (default) or "raw" (direct Socket.IO array)
+    payload_format: str = "raw"
+    
     # Image settings
     compress_images: bool = True
     image_quality: int = 65
@@ -358,27 +361,40 @@ class IoTClient:
                 {"data": event.to_broker_json()}
             ]
         
-        payload = {
-            "device_id": self.config.device_id,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "messages": [message],
-        }
+        # Choose payload format based on config
+        if self.config.payload_format == "raw":
+            # Raw Socket.IO format - direct array (matches schema exactly)
+            payload = message
+        else:
+            # Wrapped format (legacy)
+            payload = {
+                "device_id": self.config.device_id,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "messages": [message],
+            }
         
         try:
+            logger.info(f"[EVENT TX] Sending to: {url} (format={self.config.payload_format})")
+            logger.info(f"[EVENT TX] Payload preview: {json.dumps(payload, default=str)[:300]}...")
+            
             response = self._session.post(
                 url,
                 json=payload,
                 timeout=self.config.timeout_seconds,
                 verify=self.config.verify_ssl,
             )
+            
+            logger.info(f"[EVENT TX] Response: {response.status_code} - {response.text[:200]}")
             response.raise_for_status()
             
             self.stats["events_sent"] += 1
-            logger.info(f"Event sent: {event.event_id}")
+            logger.info(f"[EVENT TX] Event sent successfully: {event.event_id}")
             return True
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send event: {e}")
+            logger.error(f"[EVENT TX] Failed to send event: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"[EVENT TX] Response body: {e.response.text[:500]}")
             self.stats["events_failed"] += 1
             return False
     

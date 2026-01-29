@@ -70,7 +70,8 @@ class FaceRecognitionPipeline:
         self.model_name = config.get("model", "ArcFace")
         self.detector_backend = config.get("detector_backend", "yolov8")
         self.distance_threshold = config.get("distance_threshold", 0.35)
-        self.min_face_size = config.get("min_face_size", 60)
+        self.min_face_size = config.get("min_face_size", 40)  # Lower default for sub-stream
+        self.min_confidence = config.get("min_confidence", 0.4)  # Configurable confidence
         
         self._initialized = False
         self._embeddings_db: Dict[str, np.ndarray] = {}
@@ -142,15 +143,29 @@ class FaceRecognitionPipeline:
                 align=True
             )
             
+            # Log raw detections for debugging
+            if faces:
+                logger.info(f"[DETECTOR] Raw detections: {len(faces)} face(s)")
+            
             # Filter by minimum face size
             valid_faces = []
-            for face in faces:
-                if face.get("confidence", 0) > 0.5:
-                    region = face.get("facial_area", {})
-                    w = region.get("w", 0)
-                    h = region.get("h", 0)
+            for i, face in enumerate(faces):
+                conf = face.get("confidence", 0)
+                region = face.get("facial_area", {})
+                w = region.get("w", 0)
+                h = region.get("h", 0)
+                
+                # Log each detection for debugging
+                if conf > 0.2:  # Log anything above 20%
+                    logger.info(f"[DETECTOR] Face {i}: conf={conf:.2f}, size={w}x{h}")
+                
+                if conf > self.min_confidence:
                     if w >= self.min_face_size and h >= self.min_face_size:
                         valid_faces.append(face)
+                    else:
+                        logger.info(f"[DETECTOR] Face {i} filtered: too small ({w}x{h} < {self.min_face_size})")
+                else:
+                    logger.info(f"[DETECTOR] Face {i} filtered: low confidence ({conf:.2f} < {self.min_confidence})")
             
             return valid_faces
             
@@ -219,7 +234,8 @@ class FaceRecognitionPipeline:
             frame_id: Frame sequence number
             
         Returns:
-            List of (track_id, user_id, distance, bbox) tuples
+            List of (track_id, user_id, distance, bbox, face_img) tuples
+            user_id is None for unrecognized faces
         """
         if not self._initialized:
             if not self.initialize():
@@ -227,6 +243,9 @@ class FaceRecognitionPipeline:
         
         results = []
         faces = self.detect_faces(frame)
+        
+        if faces:
+            logger.info(f"[DETECT] Frame {frame_id}: {len(faces)} face(s) detected")
         
         for i, face in enumerate(faces):
             track_id = f"face_{i}"  # Simple tracking by detection order
@@ -241,6 +260,7 @@ class FaceRecognitionPipeline:
             # Get aligned face image
             face_img = face.get("face")
             if face_img is None:
+                logger.debug(f"[DETECT] Face {i}: No aligned image available")
                 continue
             
             # Convert to uint8 if needed
@@ -251,7 +271,12 @@ class FaceRecognitionPipeline:
             match = self.recognize_face(face_img)
             if match:
                 user_id, distance = match
-                results.append((track_id, user_id, distance, bbox))
+                logger.info(f"[MATCH] Face {i}: RECOGNIZED as {user_id} (distance={distance:.3f})")
+                results.append((track_id, user_id, distance, bbox, face_img))
+            else:
+                # Unrecognized face - include with user_id=None
+                logger.info(f"[MATCH] Face {i}: UNKNOWN (not in database)")
+                results.append((track_id, None, 1.0, bbox, face_img))
         
         return results
 
@@ -484,6 +509,51 @@ class EdgeDevice:
         except Exception as e:
             logger.error(f"Failed to load enrollments: {e}")
     
+    def _send_unknown_face_event(self, frame: np.ndarray, bbox: list, face_img: np.ndarray) -> None:
+        """
+        Send an error event for an unrecognized face.
+        
+        Args:
+            frame: Full camera frame
+            bbox: Face bounding box [x, y, w, h]
+            face_img: Cropped/aligned face image
+        """
+        try:
+            import cv2
+            import base64
+            
+            # Encode face image as JPEG
+            _, buffer = cv2.imencode('.jpg', face_img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            face_b64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # Create error event
+            from iot_integration.schemas.event_schemas import FaceRecognitionEvent
+            
+            event = FaceRecognitionEvent(
+                device_id=self.device_id,
+                person_name="UNKNOWN",
+                person_id="UNKNOWN",
+                confidence=0.0,
+                metadata={
+                    "error": "face_not_recognized",
+                    "message": "Detected face not found in enrollment database",
+                    "bbox": bbox,
+                },
+                debug=[{
+                    "level": "warning",
+                    "message": "Unrecognized face detected",
+                    "timestamp": datetime.now().isoformat() + "Z",
+                    "frame_id": self._frame_id,
+                }]
+            )
+            
+            # Send with face image
+            self.iot_client.send_event(event, image=face_img, face_bbox=bbox)
+            logger.info(f"[EVENT] Sent unknown face event (image: {len(face_b64)} bytes)")
+            
+        except Exception as e:
+            logger.error(f"[EVENT] Failed to send unknown face event: {e}")
+    
     def _send_heartbeat(self) -> None:
         """Send heartbeat to IoT broker."""
         current_time = time.time()
@@ -594,6 +664,10 @@ class EdgeDevice:
     def _main_loop(self) -> None:
         """Main processing loop."""
         frame_time = 1.0 / self.target_fps
+        last_status_log = 0
+        status_interval = 30  # Log status every 30 seconds
+        
+        logger.info("[LOOP] Main processing loop started")
         
         while self._running:
             loop_start = time.time()
@@ -601,7 +675,7 @@ class EdgeDevice:
             # Read frame
             ret, frame = self.camera.read()
             if not ret:
-                logger.warning("Failed to read frame, reconnecting...")
+                logger.warning("[LOOP] Failed to read frame, reconnecting...")
                 time.sleep(1)
                 self._connect_camera()
                 continue
@@ -616,23 +690,41 @@ class EdgeDevice:
             # Process frame for faces
             results = self.recognition.process_frame(frame, self._frame_id)
             
-            for track_id, user_id, distance, bbox in results:
+            for track_id, user_id, distance, bbox, face_img in results:
                 self.stats["faces_detected"] += 1
-                self.stats["recognitions"] += 1
                 
-                # Validate event
-                event = self.validator.process_recognition(
-                    track_id=track_id,
-                    user_id=user_id,
-                    distance=distance,
-                    frame_id=self._frame_id,
-                    face_bbox=bbox,
-                    frame=frame
-                )
-                # Event handling done in callback
+                if user_id is not None:
+                    # Recognized face - normal flow
+                    self.stats["recognitions"] += 1
+                    logger.info(f"[EVENT] Recognized: {user_id} (distance={distance:.3f})")
+                    
+                    # Validate event
+                    event = self.validator.process_recognition(
+                        track_id=track_id,
+                        user_id=user_id,
+                        distance=distance,
+                        frame_id=self._frame_id,
+                        face_bbox=bbox,
+                        frame=frame
+                    )
+                    # Event handling done in callback
+                else:
+                    # Unrecognized face - send error event
+                    logger.warning(f"[EVENT] Unrecognized face detected at frame {self._frame_id}")
+                    self._send_unknown_face_event(frame, bbox, face_img)
             
             # Send heartbeat
             self._send_heartbeat()
+            
+            # Periodic status log
+            if time.time() - last_status_log >= status_interval:
+                fps = self.stats["frames_processed"] / max(time.time() - self.stats["start_time"], 1)
+                logger.info(f"[STATUS] Frames: {self.stats['frames_processed']}, "
+                           f"FPS: {fps:.1f}, "
+                           f"Faces: {self.stats['faces_detected']}, "
+                           f"Recognized: {self.stats['recognitions']}, "
+                           f"Events: {self.stats['events_validated']}")
+                last_status_log = time.time()
             
             # Frame rate control
             elapsed = time.time() - loop_start

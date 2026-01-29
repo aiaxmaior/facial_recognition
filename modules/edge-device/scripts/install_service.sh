@@ -49,8 +49,11 @@ cp "$PROJECT_DIR/src/video_buffer.py" "$INSTALL_DIR/facial_recognition/"
 cp "$PROJECT_DIR/src/device_ctl.py" "$INSTALL_DIR/facial_recognition/"
 
 # Copy iot_integration module
-if [ -d "$(dirname "$PROJECT_DIR")/iot_integration" ]; then
-    cp -r "$(dirname "$PROJECT_DIR")/iot_integration" "$INSTALL_DIR/facial_recognition/"
+if [ -d "$PROJECT_DIR/iot_integration" ]; then
+    echo -e "${YELLOW}Copying iot_integration module...${NC}"
+    cp -r "$PROJECT_DIR/iot_integration" "$INSTALL_DIR/facial_recognition/"
+else
+    echo -e "${RED}Warning: iot_integration not found at $PROJECT_DIR/iot_integration${NC}"
 fi
 
 # Copy config if not exists

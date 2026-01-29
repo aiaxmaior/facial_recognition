@@ -2,53 +2,31 @@
     "device_id": "jetson-001",
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "api_key": null,
-    
-    "rtsp_url": "rtsp://admin:PASSWORD@192.168.13.119/Preview_01_sub",
-    
-    "heartbeat": {
-        "interval_seconds": 30
+    "camera": {
+        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_sub",
+        "fps": 25
     },
-    
-    "sync": {
-        "interval_minutes": 15,
-        "model": "ArcFace"
-    },
-    
-    "event_validation": {
-        "confirmation_frames": 5,
-        "consistency_threshold": 0.8,
-        "cooldown_seconds": 30,
+    "recognition": {
+        "model": "ArcFace",
+        "detector_backend": "yolov8",
         "distance_threshold": 0.35
     },
-    
+    "validation": {
+        "confirmation_frames": 5,
+        "consistency_threshold": 0.8,
+        "cooldown_seconds": 30
+    },
     "video_buffer": {
         "enabled": true,
+        "duration_seconds": 15,
+        "buffer_path": "/tmp/video_buffer",
         "pre_event_seconds": 10,
-        "post_event_seconds": 5,
-        "fps": 25,
-        "resolution": [1280, 720],
-        "output_dir": "/tmp/clips"
+        "post_event_seconds": 5
     },
-    
-    "image_compression": {
-        "enabled": true,
-        "quality": 65,
-        "max_size_kb": 50,
-        "max_dimension": 320
+    "sync": {
+        "enrollment_db_path": "/home/qdrive/facial_recognition/modules/edge-device/data/enrollments.db"
     },
-    
-    "event_queue": {
-        "max_size": 1000,
-        "batch_size": 10,
-        "batch_timeout_ms": 5000
-    },
-    
-    "connection": {
-        "timeout_seconds": 30,
-        "max_retries": 3,
-        "retry_backoff": 0.5,
-        "verify_ssl": true
-    },
-    
-    "dev_mode": false
+    "heartbeat": {
+        "interval_seconds": 30
+    }
 }

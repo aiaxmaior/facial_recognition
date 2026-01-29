@@ -9,20 +9,20 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check for venv locations (installed location first, then local)
-if [ -d "/opt/qraie/facial_recognition/venv" ]; then
-    VENV_PATH="/opt/qraie/facial_recognition/venv"
+# Check for venv locations (local first, then installed)
+if [ -d "$SCRIPT_DIR/venv" ]; then
+    VENV_PATH="$SCRIPT_DIR/venv"
 elif [ -d "$SCRIPT_DIR/modules/edge-device/venv" ]; then
     VENV_PATH="$SCRIPT_DIR/modules/edge-device/venv"
-elif [ -d "$SCRIPT_DIR/venv" ]; then
-    VENV_PATH="$SCRIPT_DIR/venv"
+elif [ -d "/opt/qraie/facial_recognition/venv" ]; then
+    VENV_PATH="/opt/qraie/facial_recognition/venv"
 else
     echo "Error: No venv found. Checked:"
-    echo "  - /opt/qraie/facial_recognition/venv"
-    echo "  - $SCRIPT_DIR/modules/edge-device/venv"
     echo "  - $SCRIPT_DIR/venv"
+    echo "  - $SCRIPT_DIR/modules/edge-device/venv"
+    echo "  - /opt/qraie/facial_recognition/venv"
     echo ""
-    echo "Run install_service.sh first, or create a local venv:"
+    echo "Create a venv:"
     echo "  python3 -m venv venv && source venv/bin/activate"
     return 1 2>/dev/null || exit 1
 fi
@@ -31,10 +31,13 @@ fi
 echo "Activating venv: $VENV_PATH"
 source "$VENV_PATH/bin/activate"
 
-# Set config path for convenience
-export CONFIG_PATH="/opt/qraie/config/device_config.json"
-if [ ! -f "$CONFIG_PATH" ]; then
-    export CONFIG_PATH="$SCRIPT_DIR/modules/edge-device/config/device_config.json"
+# Set config path for convenience (local first, then installed)
+if [ -f "$SCRIPT_DIR/modules/edge-device/config/config.json" ]; then
+    export CONFIG_PATH="$SCRIPT_DIR/modules/edge-device/config/config.json"
+elif [ -f "/opt/qraie/config/device_config.json" ]; then
+    export CONFIG_PATH="/opt/qraie/config/device_config.json"
+else
+    export CONFIG_PATH="$SCRIPT_DIR/modules/edge-device/config/config.json"
 fi
 
 # Navigate to module if specified
