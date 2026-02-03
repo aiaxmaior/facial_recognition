@@ -3,11 +3,14 @@
 Test Event Sender - Send mock recognition events to IoT broker.
 
 Usage:
-    python test_event.py                    # Send basic test event
-    python test_event.py --error            # Send error/unknown face event
-    python test_event.py --image face.jpg   # Include image in payload
-    python test_event.py --user "EMP-001"   # Specify user ID
-    python test_event.py --name "John Doe"  # Specify person name
+    python test_event.py                       # Send basic test event
+    python test_event.py --low-confidence      # Send low-confidence test event
+    python test_event.py --image face.jpg      # Include image in payload
+    python test_event.py --user "EMP-001"      # Specify user ID
+    python test_event.py --name "John Doe"     # Specify person name
+
+NOTE: The API does not support 'Unknown' as person_name.
+      Unrecognized faces are logged locally but not sent to the broker.
 """
 
 import argparse
@@ -87,29 +90,30 @@ def send_test_event(config: dict, args) -> bool:
     client.start()
     
     # Determine event type
-    is_error = getattr(args, 'error', False)
+    is_low_confidence = getattr(args, 'low_confidence', False)
     
-    if is_error:
-        # Build error/unknown face event
+    if is_low_confidence:
+        # Build low-confidence recognition event (for testing edge cases)
+        # NOTE: API spec says person_name cannot be "Unknown" - using test user instead
         event = FaceRecognitionEvent(
             device_id=device_id,
-            person_name="UNKNOWN",
-            person_id="UNKNOWN",
-            confidence=0.0,
+            person_name="Test_LowConfidence",
+            person_id="TEST-LOW-CONF",
+            confidence=0.35,  # Below typical threshold
             timestamp=datetime.utcnow(),
             metadata={
-                "error": "face_not_recognized",
-                "message": "TEST: Simulated unrecognized face detection",
+                "test_type": "low_confidence",
+                "message": "TEST: Simulated low-confidence recognition",
                 "bbox": [100, 100, 150, 150],
             },
             debug=[{
-                "level": "warning",
-                "message": "TEST: Unrecognized face event",
+                "level": "info",
+                "message": "TEST: Low confidence recognition event",
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "test_mode": True,
             }]
         )
-        event_type = "ERROR (Unknown Face)"
+        event_type = "Low Confidence Test"
     else:
         # Build normal recognition event
         event = FaceRecognitionEvent(
@@ -135,11 +139,11 @@ def send_test_event(config: dict, args) -> bool:
     print("=" * 50)
     print(f"  Device ID:   {device_id}")
     print(f"  Event Type:  {event_type}")
-    if is_error:
-        print(f"  Person ID:   UNKNOWN")
-        print(f"  Person Name: UNKNOWN")
-        print(f"  Confidence:  0.0 (error)")
-        print(f"  Error:       face_not_recognized")
+    if is_low_confidence:
+        print(f"  Person ID:   TEST-LOW-CONF")
+        print(f"  Person Name: Test_LowConfidence")
+        print(f"  Confidence:  0.35 (below threshold)")
+        print(f"  Test Type:   Low confidence simulation")
     else:
         print(f"  Person ID:   {args.user}")
         print(f"  Person Name: {args.name}")
@@ -178,8 +182,7 @@ def main():
         epilog="""
 Examples:
   python test_event.py                              # Basic recognition test
-  python test_event.py --error                      # Error/unknown face test
-  python test_event.py --error --image face.jpg    # Error with image
+  python test_event.py --low-confidence             # Low-confidence test
   python test_event.py --image test_face.jpg       # Recognition with image
   python test_event.py --user EMP-001 --name "John Doe"
         """
@@ -192,9 +195,10 @@ Examples:
         help="Path to config file"
     )
     parser.add_argument(
-        "--error",
+        "--low-confidence",
         action="store_true",
-        help="Send error event (unknown/unrecognized face)"
+        dest="low_confidence",
+        help="Send low-confidence test event (for testing threshold handling)"
     )
     parser.add_argument(
         "--user",
