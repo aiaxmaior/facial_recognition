@@ -3,13 +3,15 @@
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "api_key": null,
     "camera": {
-        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_sub",
+        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_main",
         "fps": 25
     },
     "recognition": {
         "model": "ArcFace",
-        "detector_backend": "yolov8",
-        "distance_threshold": 0.35
+        "detector_backend": "opencv",
+        "distance_threshold": 0.35,
+        "process_fps": 1,
+        "process_width": 640
     },
     "validation": {
         "confirmation_frames": 5,
@@ -17,7 +19,7 @@
         "cooldown_seconds": 30
     },
     "video_buffer": {
-        "enabled": true,
+        "enabled": false,
         "duration_seconds": 15,
         "buffer_path": "/tmp/video_buffer",
         "pre_event_seconds": 10,

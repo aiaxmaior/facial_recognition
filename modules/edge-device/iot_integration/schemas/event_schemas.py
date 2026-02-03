@@ -168,6 +168,9 @@ class FaceRecognitionEvent(BaseModel):
             data["person_id"] = data["user_id"]
         if "person_id" in data and "user_id" not in data:
             data["user_id"] = data["person_id"]
+        # Default person_name to person_id if not provided
+        if "person_name" not in data and "person_id" in data:
+            data["person_name"] = data["person_id"]
         super().__init__(**data)
     
     def to_broker_message(self) -> list:
