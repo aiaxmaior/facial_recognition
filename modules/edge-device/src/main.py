@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 QRaie Edge Device - Main Entry Point
 
@@ -70,13 +69,14 @@ class FaceRecognitionPipeline:
         self.model_name = config.get("model", "ArcFace")
         self.detector_backend = config.get("detector_backend", "yolov8")
         self.distance_threshold = config.get("distance_threshold", 0.35)
-        self.min_face_size = config.get("min_face_size", 40)  # Lower default for sub-stream
-        self.min_confidence = config.get("min_confidence", 0.4)  # Configurable confidence
+        self.min_face_size = config.get("min_face_size", 40)
+        self.min_confidence = config.get("min_confidence", 0.5)
         
         self._initialized = False
         self._embeddings_db: Dict[str, np.ndarray] = {}
+        self._detection_count = 0  # For periodic logging
         
-        logger.info(f"FaceRecognitionPipeline configured: model={self.model_name}, detector={self.detector_backend}")
+        logger.info(f"FaceRecognitionPipeline configured: model={self.model_name}, detector={self.detector_backend}, min_conf={self.min_confidence}")
     
     def initialize(self) -> bool:
         """
@@ -143,34 +143,33 @@ class FaceRecognitionPipeline:
                 align=True
             )
             
-            # Log raw detections for debugging
-            if faces:
-                logger.info(f"[DETECTOR] Raw detections: {len(faces)} face(s)")
+            self._detection_count += 1
             
-            # Filter by minimum face size
+            # Log raw detections periodically or when faces found with confidence
+            if faces:
+                has_confident = any(f.get("confidence", 0) > 0.1 for f in faces)
+                if has_confident or self._detection_count % 100 == 0:
+                    for i, f in enumerate(faces):
+                        conf = f.get("confidence", 0)
+                        area = f.get("facial_area", {})
+                        logger.info(f"[DETECT] Face {i}: conf={conf:.3f}, area={area}")
+            
+            # Filter by confidence and minimum face size
             valid_faces = []
-            for i, face in enumerate(faces):
+            for face in faces:
                 conf = face.get("confidence", 0)
-                region = face.get("facial_area", {})
-                w = region.get("w", 0)
-                h = region.get("h", 0)
-                
-                # Log each detection for debugging
-                if conf > 0.2:  # Log anything above 20%
-                    logger.info(f"[DETECTOR] Face {i}: conf={conf:.2f}, size={w}x{h}")
-                
-                if conf > self.min_confidence:
+                if conf >= self.min_confidence:
+                    region = face.get("facial_area", {})
+                    w = region.get("w", 0)
+                    h = region.get("h", 0)
                     if w >= self.min_face_size and h >= self.min_face_size:
                         valid_faces.append(face)
-                    else:
-                        logger.info(f"[DETECTOR] Face {i} filtered: too small ({w}x{h} < {self.min_face_size})")
-                else:
-                    logger.info(f"[DETECTOR] Face {i} filtered: low confidence ({conf:.2f} < {self.min_confidence})")
+                        logger.info(f"[DETECT] Valid face: conf={conf:.3f}, size={w}x{h}")
             
             return valid_faces
             
         except Exception as e:
-            logger.debug(f"Face detection error: {e}")
+            logger.warning(f"Face detection error: {e}")
             return []
     
     def recognize_face(self, face_img: np.ndarray) -> Optional[tuple]:
@@ -225,58 +224,60 @@ class FaceRecognitionPipeline:
             logger.debug(f"Recognition error: {e}")
             return None
     
-    def process_frame(self, frame: np.ndarray, frame_id: int) -> list:
+    def process_frame(self, frame: np.ndarray, frame_id: int, faces: list = None) -> list:
         """
         Process a single frame for face detection and recognition.
         
         Args:
-            frame: BGR image frame
+            frame: BGR image frame (original resolution for quality recognition)
             frame_id: Frame sequence number
+            faces: Pre-detected faces with scaled coordinates (optional, will detect if not provided)
             
         Returns:
-            List of (track_id, user_id, distance, bbox, face_img) tuples
-            user_id is None for unrecognized faces
+            List of (track_id, user_id, distance, bbox) tuples
         """
         if not self._initialized:
             if not self.initialize():
                 return []
         
         results = []
-        faces = self.detect_faces(frame)
+        if faces is None:
+            faces = self.detect_faces(frame)
         
-        if faces:
-            logger.info(f"[DETECT] Frame {frame_id}: {len(faces)} face(s) detected")
+        h, w = frame.shape[:2]
         
         for i, face in enumerate(faces):
             track_id = f"face_{i}"  # Simple tracking by detection order
             region = face.get("facial_area", {})
-            bbox = [
-                region.get("x", 0),
-                region.get("y", 0),
-                region.get("w", 0),
-                region.get("h", 0)
-            ]
+            x = max(0, region.get("x", 0))
+            y = max(0, region.get("y", 0))
+            fw = region.get("w", 0)
+            fh = region.get("h", 0)
             
-            # Get aligned face image
-            face_img = face.get("face")
-            if face_img is None:
-                logger.debug(f"[DETECT] Face {i}: No aligned image available")
+            bbox = [x, y, fw, fh]
+            
+            # Crop face from original frame for better recognition quality
+            # Add margin for better recognition
+            margin = int(max(fw, fh) * 0.2)
+            x1 = max(0, x - margin)
+            y1 = max(0, y - margin)
+            x2 = min(w, x + fw + margin)
+            y2 = min(h, y + fh + margin)
+            
+            face_crop = frame[y1:y2, x1:x2]
+            if face_crop.size == 0:
+                logger.warning(f"[RECOGNIZE] Empty face crop at ({x},{y},{fw},{fh})")
                 continue
             
-            # Convert to uint8 if needed
-            if face_img.dtype != np.uint8:
-                face_img = (face_img * 255).astype(np.uint8)
-            
-            # Recognize
-            match = self.recognize_face(face_img)
+            # Recognize using the cropped face
+            match = self.recognize_face(face_crop)
             if match:
                 user_id, distance = match
-                logger.info(f"[MATCH] Face {i}: RECOGNIZED as {user_id} (distance={distance:.3f})")
-                results.append((track_id, user_id, distance, bbox, face_img))
+                results.append((track_id, user_id, distance, bbox))
+                logger.info(f"[MATCH] {user_id} (distance={distance:.3f})")
             else:
-                # Unrecognized face - include with user_id=None
-                logger.info(f"[MATCH] Face {i}: UNKNOWN (not in database)")
-                results.append((track_id, None, 1.0, bbox, face_img))
+                # Log unrecognized face for debugging
+                logger.debug(f"[NO MATCH] Face {i} not recognized (no match below threshold)")
         
         return results
 
@@ -293,7 +294,7 @@ class EdgeDevice:
     - IoT communication
     """
     
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, display: bool = False):
         """
         Initialize edge device.
         
@@ -362,6 +363,15 @@ class EdgeDevice:
         self._frame_id = 0
         self._last_heartbeat = 0
         self._heartbeat_interval = self.config.get("heartbeat", {}).get("interval_seconds", 30)
+        
+        # Debug display
+        self._display = display
+        self._last_detections = []  # Store detections for drawing
+        
+        # Processing settings
+        self._process_fps = recognition_config.get("process_fps", 1)  # Process 1 frame per second
+        self._process_width = recognition_config.get("process_width", 640)  # Resize for faster detection
+        self._last_process_time = 0
         
         # Statistics
         self.stats = {
@@ -464,10 +474,11 @@ class EdgeDevice:
         logger.info(f"Connecting to camera: {self.rtsp_url.split('@')[-1]}")  # Hide password
         
         # Use GStreamer pipeline for better RTSP handling on Jetson
+        # Scale to process_width for efficiency
         gst_pipeline = (
             f"rtspsrc location={self.rtsp_url} latency=0 ! "
             "rtph264depay ! h264parse ! nvv4l2decoder ! "
-            "nvvidconv ! video/x-raw,format=BGRx ! "
+            f"nvvidconv ! video/x-raw,width={self._process_width},format=BGRx ! "
             "videoconvert ! video/x-raw,format=BGR ! appsink"
         )
         
@@ -475,7 +486,7 @@ class EdgeDevice:
             # Try GStreamer first (optimized for Jetson)
             self.camera = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
             if self.camera.isOpened():
-                logger.info("Connected via GStreamer pipeline")
+                logger.info(f"Connected via GStreamer pipeline @ {self._process_width}px")
                 return True
         except Exception as e:
             logger.debug(f"GStreamer failed: {e}")
@@ -484,7 +495,12 @@ class EdgeDevice:
         try:
             self.camera = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
             if self.camera.isOpened():
-                logger.info("Connected via FFmpeg")
+                # Set capture resolution
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self._process_width)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self._process_width * 9 / 16))  # Assume 16:9
+                actual_w = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                logger.info(f"Connected via FFmpeg @ {actual_w}x{actual_h}")
                 return True
         except Exception as e:
             logger.debug(f"FFmpeg failed: {e}")
@@ -493,6 +509,8 @@ class EdgeDevice:
         try:
             self.camera = cv2.VideoCapture(self.rtsp_url)
             if self.camera.isOpened():
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self._process_width)
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self._process_width * 9 / 16))
                 logger.info("Connected via default backend")
                 return True
         except Exception as e:
@@ -508,51 +526,6 @@ class EdgeDevice:
             logger.info(f"Loaded {len(embeddings)} enrollments")
         except Exception as e:
             logger.error(f"Failed to load enrollments: {e}")
-    
-    def _send_unknown_face_event(self, frame: np.ndarray, bbox: list, face_img: np.ndarray) -> None:
-        """
-        Send an error event for an unrecognized face.
-        
-        Args:
-            frame: Full camera frame
-            bbox: Face bounding box [x, y, w, h]
-            face_img: Cropped/aligned face image
-        """
-        try:
-            import cv2
-            import base64
-            
-            # Encode face image as JPEG
-            _, buffer = cv2.imencode('.jpg', face_img, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            face_b64 = base64.b64encode(buffer).decode('utf-8')
-            
-            # Create error event
-            from iot_integration.schemas.event_schemas import FaceRecognitionEvent
-            
-            event = FaceRecognitionEvent(
-                device_id=self.device_id,
-                person_name="UNKNOWN",
-                person_id="UNKNOWN",
-                confidence=0.0,
-                metadata={
-                    "error": "face_not_recognized",
-                    "message": "Detected face not found in enrollment database",
-                    "bbox": bbox,
-                },
-                debug=[{
-                    "level": "warning",
-                    "message": "Unrecognized face detected",
-                    "timestamp": datetime.now().isoformat() + "Z",
-                    "frame_id": self._frame_id,
-                }]
-            )
-            
-            # Send with face image
-            self.iot_client.send_event(event, image=face_img, face_bbox=bbox)
-            logger.info(f"[EVENT] Sent unknown face event (image: {len(face_b64)} bytes)")
-            
-        except Exception as e:
-            logger.error(f"[EVENT] Failed to send unknown face event: {e}")
     
     def _send_heartbeat(self) -> None:
         """Send heartbeat to IoT broker."""
@@ -625,6 +598,122 @@ class EdgeDevice:
             return self.stats["frames_processed"] / elapsed
         return 0.0
     
+    def _draw_debug_overlay(self, frame: np.ndarray, detections: list, raw_faces: list = None) -> np.ndarray:
+        """
+        Draw debug overlay with bounding boxes and info.
+        
+        Args:
+            frame: BGR image frame
+            detections: List of (track_id, user_id, distance, bbox) tuples from recognition
+            raw_faces: Raw face detections from detector (before recognition)
+            
+        Returns:
+            Frame with overlay drawn
+        """
+        # Resize frame for display if too large
+        h, w = frame.shape[:2]
+        display_scale = 1.0
+        if w > 1920:
+            display_scale = 1920 / w
+            display_frame = cv2.resize(frame, None, fx=display_scale, fy=display_scale)
+            h, w = display_frame.shape[:2]
+        else:
+            display_frame = frame.copy()
+        
+        # Draw raw detections in yellow (faces detected but not necessarily recognized)
+        if raw_faces:
+            for i, face in enumerate(raw_faces):
+                region = face.get("facial_area", {})
+                x = int(region.get("x", 0) * display_scale)
+                y = int(region.get("y", 0) * display_scale)
+                fw = int(region.get("w", 0) * display_scale)
+                fh = int(region.get("h", 0) * display_scale)
+                conf = face.get("confidence", 0)
+                
+                # Yellow box for raw detection
+                cv2.rectangle(display_frame, (x, y), (x + fw, y + fh), (0, 255, 255), 2)
+                label = f"conf={conf:.2f}"
+                cv2.putText(display_frame, label, (x, y - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        # Draw recognized faces in green with user info
+        for track_id, user_id, distance, bbox in detections:
+            x = int(bbox[0] * display_scale)
+            y = int(bbox[1] * display_scale)
+            bw = int(bbox[2] * display_scale)
+            bh = int(bbox[3] * display_scale)
+            
+            # Green box for recognized face
+            cv2.rectangle(display_frame, (x, y), (x + bw, y + bh), (0, 255, 0), 3)
+            
+            # Label with user ID and confidence
+            confidence_pct = (1 - distance) * 100
+            label = f"{user_id}"
+            sublabel = f"{confidence_pct:.0f}% match"
+            
+            # Draw name label with background
+            font_scale = 0.8
+            thickness = 2
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            sublabel_size, _ = cv2.getTextSize(sublabel, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            
+            # Background rectangle
+            padding = 5
+            bg_width = max(label_size[0], sublabel_size[0]) + padding * 2
+            bg_height = label_size[1] + sublabel_size[1] + padding * 3
+            
+            cv2.rectangle(display_frame, (x, y - bg_height), (x + bg_width, y), (0, 200, 0), -1)
+            cv2.rectangle(display_frame, (x, y - bg_height), (x + bg_width, y), (0, 255, 0), 2)
+            
+            # Draw text
+            cv2.putText(display_frame, label, (x + padding, y - sublabel_size[1] - padding * 2),
+                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+            cv2.putText(display_frame, sublabel, (x + padding, y - padding),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 200), 1)
+        
+        # Draw stats overlay
+        fps = self._calculate_fps()
+        enrolled_count = len(self.recognition._embeddings_db) if hasattr(self.recognition, '_embeddings_db') else 0
+        
+        stats_text = [
+            f"Device: {self.device_id}",
+            f"FPS: {fps:.1f}",
+            f"Frames: {self.stats['frames_processed']}",
+            f"Enrolled: {enrolled_count}",
+            f"Detected: {self.stats['faces_detected']}",
+            f"Events: {self.stats['events_validated']}",
+        ]
+        
+        # Semi-transparent background for stats
+        overlay = display_frame.copy()
+        cv2.rectangle(overlay, (10, 10), (220, 160), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, display_frame, 0.4, 0, display_frame)
+        
+        for i, text in enumerate(stats_text):
+            color = (0, 255, 0) if i == 0 else (255, 255, 255)
+            cv2.putText(display_frame, text, (15, 30 + i * 22),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
+        
+        # Status indicator
+        if enrolled_count == 0:
+            status = "NO ENROLLMENTS"
+            status_color = (0, 0, 255)  # Red
+        elif raw_faces:
+            status = f"TRACKING {len(raw_faces)} FACE(S)"
+            status_color = (0, 255, 255)  # Yellow
+        else:
+            status = "SCANNING..."
+            status_color = (200, 200, 200)  # Gray
+        
+        cv2.putText(display_frame, status, (w - 250, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+        
+        # Instructions
+        cv2.putText(display_frame, "Press 'q' to quit | 's' to save frame", (10, h - 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+        
+        return display_frame
+    
     def start(self) -> None:
         """Start the edge device processing loop."""
         logger.info("Starting EdgeDevice...")
@@ -664,10 +753,13 @@ class EdgeDevice:
     def _main_loop(self) -> None:
         """Main processing loop."""
         frame_time = 1.0 / self.target_fps
-        last_status_log = 0
-        status_interval = 30  # Log status every 30 seconds
-        
         logger.info("[LOOP] Main processing loop started")
+        
+        # Create window if display enabled
+        if self._display:
+            cv2.namedWindow("QRaie Face Recognition", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("QRaie Face Recognition", 1280, 720)
+            logger.info("[DISPLAY] Debug display window opened")
         
         while self._running:
             loop_start = time.time()
@@ -675,7 +767,7 @@ class EdgeDevice:
             # Read frame
             ret, frame = self.camera.read()
             if not ret:
-                logger.warning("[LOOP] Failed to read frame, reconnecting...")
+                logger.warning("Failed to read frame, reconnecting...")
                 time.sleep(1)
                 self._connect_camera()
                 continue
@@ -687,49 +779,124 @@ class EdgeDevice:
             if self.video_buffer:
                 self.video_buffer.add_frame(frame)
             
-            # Process frame for faces
-            results = self.recognition.process_frame(frame, self._frame_id)
+            # Rate-limit face processing to reduce CPU load
+            current_time = time.time()
+            process_interval = 1.0 / self._process_fps
+            should_process = (current_time - self._last_process_time) >= process_interval
             
-            for track_id, user_id, distance, bbox, face_img in results:
-                self.stats["faces_detected"] += 1
+            raw_faces = []
+            results = []
+            
+            if should_process:
+                self._last_process_time = current_time
                 
-                if user_id is not None:
-                    # Recognized face - normal flow
-                    self.stats["recognitions"] += 1
-                    logger.info(f"[EVENT] Recognized: {user_id} (distance={distance:.3f})")
-                    
-                    # Validate event
-                    event = self.validator.process_recognition(
-                        track_id=track_id,
-                        user_id=user_id,
-                        distance=distance,
-                        frame_id=self._frame_id,
-                        face_bbox=bbox,
-                        frame=frame
-                    )
-                    # Event handling done in callback
+                # Downscale frame for faster detection
+                orig_h, orig_w = frame.shape[:2]
+                scale = self._process_width / max(orig_w, orig_h)
+                if scale < 1.0:
+                    small_frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
                 else:
-                    # Unrecognized face - send error event
-                    logger.warning(f"[EVENT] Unrecognized face detected at frame {self._frame_id}")
-                    self._send_unknown_face_event(frame, bbox, face_img)
+                    small_frame = frame
+                    scale = 1.0
+                
+                # Benchmark: Detect faces on downscaled frame
+                t0 = time.time()
+                raw_faces_small = self.recognition.detect_faces(small_frame)
+                t_detect = time.time() - t0
+                
+                # Scale face coordinates back to original frame size
+                raw_faces = []
+                for face in raw_faces_small:
+                    conf = face.get("confidence", 0)
+                    region = face.get("facial_area", {})
+                    # Scale coordinates back up
+                    scaled_region = {
+                        "x": int(region.get("x", 0) / scale),
+                        "y": int(region.get("y", 0) / scale),
+                        "w": int(region.get("w", 0) / scale),
+                        "h": int(region.get("h", 0) / scale),
+                    }
+                    # Copy other fields
+                    scaled_face = face.copy()
+                    scaled_face["facial_area"] = scaled_region
+                    raw_faces.append(scaled_face)
+                
+                if raw_faces:
+                    logger.info(f"[DETECT] Found {len(raw_faces)} face(s) in {t_detect*1000:.0f}ms @ {small_frame.shape[1]}x{small_frame.shape[0]}")
+                    for i, face in enumerate(raw_faces):
+                        conf = face.get("confidence", 0)
+                        region = face.get("facial_area", {})
+                        logger.info(f"[DETECT] Face {i}: conf={conf:.2f}, bbox=({region['x']},{region['y']},{region['w']},{region['h']})")
+                
+                # Benchmark: Recognition on original frame (for quality)
+                t1 = time.time()
+                results = self.recognition.process_frame(frame, self._frame_id, faces=raw_faces)
+                t_recognize = time.time() - t1
+                
+                # Log recognition results
+                if results:
+                    for track_id, user_id, distance, bbox in results:
+                        logger.info(f"[RECOGNIZE] {user_id}: distance={distance:.3f}, match={'YES' if distance <= self.recognition.distance_threshold else 'NO'}")
+                
+                logger.debug(f"[PERF] Detect: {t_detect*1000:.0f}ms ({small_frame.shape[1]}x{small_frame.shape[0]}), Recognize: {t_recognize*1000:.0f}ms, Total: {(t_detect+t_recognize)*1000:.0f}ms")
+                
+                # Cache for display
+                self._last_detections = (raw_faces, results)
+            
+            for track_id, user_id, distance, bbox in results:
+                self.stats["faces_detected"] += 1
+                self.stats["recognitions"] += 1
+                
+                # Validate event
+                event = self.validator.process_recognition(
+                    track_id=track_id,
+                    user_id=user_id,
+                    distance=distance,
+                    frame_id=self._frame_id,
+                    face_bbox=bbox,
+                    frame=frame
+                )
+                # Event handling done in callback
+            
+            # Display debug frame
+            if self._display:
+                # Use cached detections if we didn't process this frame
+                if not should_process and hasattr(self, '_last_detections') and self._last_detections:
+                    raw_faces, results = self._last_detections
+                
+                display_frame = self._draw_debug_overlay(frame, results, raw_faces)
+                cv2.imshow("QRaie Face Recognition", display_frame)
+                
+                # Check for keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    logger.info("[DISPLAY] Quit requested via keyboard")
+                    self._running = False
+                    break
+                elif key == ord('s'):
+                    # Save current frame
+                    save_path = f"data/frame_{self._frame_id}.jpg"
+                    cv2.imwrite(save_path, frame)
+                    logger.info(f"[DISPLAY] Frame saved to {save_path}")
+            
+            # Log status periodically
+            if self._frame_id % 300 == 0:  # Every ~30 seconds at 10fps
+                fps = self._calculate_fps()
+                logger.info(f"[STATUS] Frames: {self.stats['frames_processed']}, FPS: {fps:.1f}, "
+                           f"Faces: {self.stats['faces_detected']}, Recognized: {self.stats['recognitions']}, "
+                           f"Events: {self.stats['events_validated']}")
             
             # Send heartbeat
             self._send_heartbeat()
-            
-            # Periodic status log
-            if time.time() - last_status_log >= status_interval:
-                fps = self.stats["frames_processed"] / max(time.time() - self.stats["start_time"], 1)
-                logger.info(f"[STATUS] Frames: {self.stats['frames_processed']}, "
-                           f"FPS: {fps:.1f}, "
-                           f"Faces: {self.stats['faces_detected']}, "
-                           f"Recognized: {self.stats['recognitions']}, "
-                           f"Events: {self.stats['events_validated']}")
-                last_status_log = time.time()
             
             # Frame rate control
             elapsed = time.time() - loop_start
             if elapsed < frame_time:
                 time.sleep(frame_time - elapsed)
+        
+        # Cleanup display
+        if self._display:
+            cv2.destroyAllWindows()
     
     def stop(self) -> None:
         """Stop the edge device."""
@@ -767,6 +934,11 @@ def main():
         action="store_true",
         help="Enable debug logging"
     )
+    parser.add_argument(
+        "--display",
+        action="store_true",
+        help="Show live video with bounding boxes (requires display or X11 forwarding)"
+    )
     
     args = parser.parse_args()
     
@@ -780,7 +952,7 @@ def main():
         sys.exit(1)
     
     # Create and start device
-    device = EdgeDevice(args.config)
+    device = EdgeDevice(args.config, display=args.display)
     
     # Handle signals for graceful shutdown
     def signal_handler(sig, frame):
