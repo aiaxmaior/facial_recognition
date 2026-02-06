@@ -1029,19 +1029,28 @@ def main():
         print(f"ERROR: Failed to load config: {e}")
         sys.exit(1)
     
-    # Set up structured logging
+    # Log dir: always under project root (edge-device) so we get a log file regardless of cwd
+    project_root = Path(__file__).resolve().parent.parent
+    log_dir = project_root / "logs"
+    
+    # Set up structured logging (always write to file)
     log_level = logging.DEBUG if args.debug else logging.INFO
     use_json = args.json_logs and not args.no_json_logs
     
     setup_logging(
         device_id=device_id,
-        log_dir="logs",
+        log_dir=str(log_dir),
         console_level=log_level,
         file_level=logging.DEBUG,
         json_logs=use_json,
     )
     
-    logger.info(f"Logging initialized: device_id={device_id}, json={use_json}, level={log_level}")
+    date_str = datetime.now().strftime("%Y%m%d")
+    log_file = log_dir / (f"events_{date_str}.jsonl" if use_json else f"device_{date_str}.log")
+    logger.info(
+        f"Logging initialized: device_id={device_id}, json={use_json}, level={log_level}. "
+        f"Log file: {log_file}"
+    )
     
     # Create and start device
     device = EdgeDevice(args.config, display=args.display)
