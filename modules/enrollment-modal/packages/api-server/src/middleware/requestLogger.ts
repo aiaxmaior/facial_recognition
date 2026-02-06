@@ -33,8 +33,8 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
     const duration = Date.now() - (req.startTime || Date.now());
     
     // Extract employee ID from params or body if available
-    const employeeId = req.params.employeeId || 
-                       req.params.userId || 
+    const employeeId = req.params?.employeeId || 
+                       req.params?.userId || 
                        req.body?.employee_id || 
                        req.body?.userId;
 
@@ -67,8 +67,8 @@ export function errorLogger(
   res: Response,
   next: NextFunction
 ): void {
-  const employeeId = req.params.employeeId || 
-                     req.params.userId || 
+  const employeeId = req.params?.employeeId || 
+                     req.params?.userId || 
                      req.body?.employee_id;
 
   logger.error(`Unhandled error: ${err.message}`, {

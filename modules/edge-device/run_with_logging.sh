@@ -1,11 +1,14 @@
 #!/bin/bash
 # Auto-restart wrapper with logging
-LOG_DIR="/home/qdrive/facial_recognition/modules/edge-device_dev/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
 
 echo "=== Pipeline started at $(date) ===" | tee -a "$LOG_FILE"
 echo "Log file: $LOG_FILE"
+
+cd "$SCRIPT_DIR"
 
 while true; do
     echo "=== Starting pipeline at $(date) ===" >> "$LOG_FILE"

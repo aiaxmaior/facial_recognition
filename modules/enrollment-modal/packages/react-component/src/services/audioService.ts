@@ -14,6 +14,10 @@ class AudioService {
   // Advisory audio tracking
   private lastAdvisoryTime: number = 0;
   private advisoryCount: number = 0;
+  
+  // Direction audio tracking - delay guidance after direction plays
+  private lastDirectionTime: number = 0;
+  private directionGracePeriod: number = 3000; // 3 seconds after direction before guidance
 
   constructor(audioBasePath: string = '/audio') {
     this.audioBasePath = audioBasePath;
@@ -111,6 +115,8 @@ class AudioService {
     const filename = audioMap[poseName];
     if (filename) {
       this.play(filename, true);
+      this.lastDirectionTime = Date.now(); // Track when direction audio played
+      console.log(`[Audio] Direction played, guidance delayed for ${this.directionGracePeriod}ms`);
     }
   }
 
@@ -152,13 +158,24 @@ class AudioService {
       return;
     }
 
+    const now = Date.now();
+    
+    // Check if we're still in the grace period after direction audio
+    const timeSinceDirection = now - this.lastDirectionTime;
+    if (timeSinceDirection < this.directionGracePeriod) {
+      // Only log occasionally to avoid spam
+      if (Math.random() < 0.02) {
+        console.log(`[Audio] Advisory skipped - grace period (${(timeSinceDirection/1000).toFixed(1)}s < ${this.directionGracePeriod/1000}s)`);
+      }
+      return;
+    }
+
     // Check rate limiting
     if (this.advisoryCount >= ADVISORY_AUDIO_MAX) {
       console.log(`[Audio] Advisory skipped - max count reached (${this.advisoryCount}/${ADVISORY_AUDIO_MAX})`);
       return;
     }
 
-    const now = Date.now();
     const timeSinceLast = now - this.lastAdvisoryTime;
 
     if (timeSinceLast < ADVISORY_AUDIO_INTERVAL * 1000) {
