@@ -3,7 +3,7 @@
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "api_key": null,
     "camera": {
-        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_sub",
+        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.50.141/Preview_01_main",
         "fps": 25
     },
     "recognition": {
@@ -26,7 +26,7 @@
         "post_event_seconds": 5
     },
     "sync": {
-        "enrollment_db_path": "/home/qdrive/facial_recognition/modules/edge-device/data/enrollments.db"
+        "enrollment_db_path": "data/enrollments.db"
     },
     "heartbeat": {
         "interval_seconds": 30

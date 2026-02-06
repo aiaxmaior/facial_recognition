@@ -73,39 +73,45 @@ function calculateHeadPose(
   const eyeDy = rightEye.y - leftEye.y;
   const roll = Math.atan2(eyeDy, eyeDx) * (180 / Math.PI);
   
+  // ===== Compute face scale for normalization =====
+  // Use eye width as reference to normalize Z values (accounts for distance from camera)
+  const eyeWidth = Math.abs(eyeDx);
+  const faceHeight = Math.abs(chin.y - forehead.y);
+  const faceScale = Math.max(eyeWidth, faceHeight, 0.001);
+  
   // ===== YAW (left/right rotation) =====
-  // Use the Z-depth difference between left and right sides of face
-  // When looking left: right side comes forward (smaller Z), left side goes back
-  // When looking right: left side comes forward, right side goes back
+  // Use the Z-depth difference between left and right eyes
   // MediaPipe Z: more negative = closer to camera
+  // When looking LEFT (from user's perspective): right eye comes forward (more negative Z)
+  // When looking RIGHT: left eye comes forward (more negative Z)
   const leftZ = leftEye.z;
   const rightZ = rightEye.z;
-  const zDiffLR = (leftZ - rightZ);  // positive = looking right, negative = looking left
+  const zDiffLR = (rightZ - leftZ) / faceScale;  // FIXED: inverted for correct left/right
   
-  // Also use nose position relative to eye center for validation
+  // Also use nose position relative to eye center
   const eyeCenterX = (leftEye.x + rightEye.x) / 2;
-  const noseOffsetX = noseTip.x - eyeCenterX;
-  const eyeWidth = Math.abs(eyeDx);
+  const noseOffsetX = (eyeCenterX - noseTip.x) / faceScale;  // FIXED: inverted
   
-  // Combine both methods for more robust yaw estimation
-  // Z-based method (primary)
-  const yawFromZ = zDiffLR * 150;  // Scale Z difference to degrees
-  // X-based method (secondary)
-  const yawFromX = eyeWidth > 0.001 ? (noseOffsetX / eyeWidth) * 45 : 0;
+  // Z-based method (primary) - reduced by 50% for better calibration
+  const yawFromZ = zDiffLR * 300;
+  // X-based method (secondary) - nose offset indicates rotation direction
+  const yawFromX = noseOffsetX * 30;
   
-  // Weighted combination (Z is more reliable for yaw)
-  let yaw = yawFromZ * 0.7 + yawFromX * 0.3;
+  // Weighted combination
+  let yaw = yawFromZ * 0.6 + yawFromX * 0.4;
   
   // ===== PITCH (up/down rotation) =====
-  // Use the Z-depth difference between forehead and chin
-  // When looking UP: chin comes forward (smaller Z), forehead goes back (larger Z)
-  // When looking DOWN: forehead comes forward (smaller Z), chin goes back (larger Z)
+  // Use Z-depth difference between forehead and chin
+  // When looking UP: forehead goes back (less negative Z), chin comes forward (more negative Z)
+  //   So foreheadZ > chinZ, meaning (foreheadZ - chinZ) is positive
+  // When looking DOWN: forehead comes forward (more negative Z), chin goes back
+  //   So foreheadZ < chinZ, meaning (foreheadZ - chinZ) is negative
   const foreheadZ = forehead.z;
   const chinZ = chin.z;
-  const zDiffUD = (chinZ - foreheadZ);  // positive = looking up, negative = looking down
+  const zDiffUD = (foreheadZ - chinZ) / faceScale;
   
-  // Scale to degrees - calibrate based on typical Z value ranges
-  let pitch = zDiffUD * 100;  // Scale Z difference to approximate degrees
+  // Scale to degrees - reduced by 50% for better calibration
+  let pitch = zDiffUD * 125;
   
   // Clamp to reasonable range
   yaw = Math.max(-90, Math.min(90, yaw));
@@ -113,7 +119,7 @@ function calculateHeadPose(
   
   // Debug logging
   if (Math.random() < 0.05) {
-    console.log(`[Pose] zDiffLR=${zDiffLR.toFixed(3)} zDiffUD=${zDiffUD.toFixed(3)} | YAW=${yaw.toFixed(1)}° PITCH=${pitch.toFixed(1)}° ROLL=${roll.toFixed(1)}°`);
+    console.log(`[Pose] zDiffLR=${zDiffLR.toFixed(4)} zDiffUD=${zDiffUD.toFixed(4)} faceScale=${faceScale.toFixed(3)} | YAW=${yaw.toFixed(1)}° PITCH=${pitch.toFixed(1)}° ROLL=${roll.toFixed(1)}°`);
   }
   
   return { yaw, pitch, roll };
