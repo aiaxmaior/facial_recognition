@@ -50,8 +50,8 @@ class IoTClientConfig:
     # Event queue settings
     max_queue_size: int = 1000
     
-    # Payload format: "wrapped" (default) or "raw" (direct Socket.IO array)
-    payload_format: str = "raw"
+    # Payload format: "wrapped" (matches working old_2 version) or "raw" (direct Socket.IO array)
+    payload_format: str = "wrapped"
     
     # Image settings
     compress_images: bool = True
@@ -384,8 +384,9 @@ class IoTClient:
             ]
         
         # Add image to message data if present
-        if has_image and len(message) > 1 and "data" in message[1]:
-            message[1]["data"]["image"] = event.image
+        # TODO: Re-enable once broker confirms image field support
+        # if has_image and len(message) > 1 and "data" in message[1]:
+        #     message[1]["data"]["image"] = event.image
         
         # Choose payload format based on config
         if self.config.payload_format == "raw":
@@ -662,6 +663,9 @@ class IoTClient:
             return True
             
         except requests.exceptions.RequestException as e:
+            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 409:
+                logger.info(f"Device already registered: {self.config.device_id}")
+                return True
             logger.error(f"Device registration failed: {e}")
             return False
     

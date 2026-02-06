@@ -3,13 +3,13 @@
     "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
     "api_key": null,
     "camera": {
-        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.50.141/Preview_01_main",
+        "rtsp_url": "rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_sub",
         "fps": 25
     },
     "pipeline": {
         "mode": "deepstream",
         "deepstream": {
-            "latency_ms": 100,
+            "latency_ms": 50,
             "drop_on_latency": true,
             "output_width": 640,
             "output_height": 360,
@@ -34,7 +34,7 @@
     "validation": {
         "confirmation_frames": 3,
         "consistency_threshold": 0.6,
-        "cooldown_seconds": 10
+        "cooldown_seconds":2
     },
     "video_buffer": {
         "enabled": false,
@@ -48,5 +48,18 @@
     },
     "heartbeat": {
         "interval_seconds": 30
+    },
+    "health_check": {
+        "auto_remediate": true,
+        "thresholds": {
+            "cpu_warn_percent": 85,
+            "cpu_crit_percent": 95,
+            "memory_warn_percent": 85,
+            "memory_crit_percent": 95,
+            "disk_warn_percent": 85,
+            "disk_crit_percent": 95,
+            "temp_warn_c": 75,
+            "temp_crit_c": 85
+        }
     }
 }

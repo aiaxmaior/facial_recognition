@@ -1,0 +1,25 @@
+[Unit]
+Description=QRaie Periodic Health Check (one-shot, triggered by timer)
+Documentation=https://github.com/qraie/facial_recognition
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/qraie/facial_recognition
+
+Environment=PYTHONUNBUFFERED=1
+Environment=CONFIG_PATH=/opt/qraie/config/device_config.json
+
+ExecStart=/opt/qraie/facial_recognition/venv/bin/python src/health_check.py \
+    --config /opt/qraie/config/device_config.json
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qraie-health-check
+
+# Timeout for one-shot
+TimeoutStartSec=60

@@ -156,6 +156,7 @@ class FaceRecognitionEvent(BaseModel):
     auth_token: Optional[str] = Field(None, description="Auth token for broker")
     metadata: Optional[FaceRecognitionMetadata] = Field(default=None)
     debug: List[Any] = Field(default_factory=list, description="Graylog entries")
+    image: Optional[str] = Field(None, description="Base64-encoded face image")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     event_id: Optional[str] = Field(None)
     

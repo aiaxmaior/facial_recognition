@@ -1,0 +1,39 @@
+[Unit]
+Description=QRaie Health Check Daemon
+Documentation=https://github.com/qraie/facial_recognition
+After=network-online.target qraie-facial.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+WorkingDirectory=/opt/qraie/facial_recognition
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=CONFIG_PATH=/opt/qraie/config/device_config.json
+
+# Health check daemon - runs continuously, checks every 60s
+ExecStart=/opt/qraie/facial_recognition/venv/bin/python src/health_check.py \
+    --config /opt/qraie/config/device_config.json \
+    --daemon \
+    --interval 60
+
+# Systemd watchdog - health daemon itself is monitored
+# If it doesn't ping watchdog within 120s, systemd restarts it
+WatchdogSec=120
+
+# Restart policy
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qraie-health
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,11 @@
 [Unit]
 Description=QRaie Facial Recognition Service
 Documentation=https://github.com/qraie/facial_recognition
-After=network-online.target
+After=network-online.target ssh.service
 Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# If the network takes a while, don't fail - just wait
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -17,20 +18,29 @@ Environment=CUDA_VISIBLE_DEVICES=0
 Environment=CONFIG_PATH=/opt/qraie/config/device_config.json
 Environment=PYTHONUNBUFFERED=1
 
-# Execution
-ExecStartPre=/bin/sleep 10
-ExecStart=/opt/qraie/facial_recognition/venv/bin/python main.py --config /opt/qraie/config/device_config.json
+# Wait for network and camera to be ready after boot
+ExecStartPre=/bin/sleep 15
+# Quick connectivity sanity check before launching pipeline
+ExecStartPre=/bin/sh -c 'ping -c 1 -W 5 8.8.8.8 || echo "WARN: No internet, starting anyway"'
 
-# Restart policy
+# Main execution
+ExecStart=/opt/qraie/facial_recognition/venv/bin/python src/main.py \
+    --config /opt/qraie/config/device_config.json
+
+# Graceful shutdown
+ExecStop=/bin/kill -SIGTERM $MAINPID
+TimeoutStopSec=30
+
+# Restart policy - always restart, be resilient
 Restart=always
 RestartSec=10
-TimeoutStopSec=30
 
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/qraie/data /opt/qraie/logs /tmp
+ReadOnlyPaths=/opt/qraie/config
 PrivateTmp=true
 
 # Resource limits
