@@ -1,12 +1,13 @@
 #!/bin/bash
-# Auto-restart wrapper with logging
+# Auto-restart wrapper: tees stdout/stderr to a timestamped log and restarts on exit.
+# The pipeline also writes to logs/ by default (see startup message "Log file: ...").
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
 
 echo "=== Pipeline started at $(date) ===" | tee -a "$LOG_FILE"
-echo "Log file: $LOG_FILE"
+echo "Tee log: $LOG_FILE (app also writes to $LOG_DIR/events_*.jsonl or device_*.log)"
 
 cd "$SCRIPT_DIR"
 
