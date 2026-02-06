@@ -37,11 +37,12 @@ from iot_integration.sync_manager import SyncManager
 from iot_integration.db_manager import EnrollmentDBManager
 from iot_integration.schemas.event_schemas import FacialIdEvent
 from iot_integration.image_utils import encode_video_clip_b64
+from iot_integration.logging_config import setup_logging, build_debug_entries
 
 # Local imports
 from video_buffer import VideoRingBuffer
 
-# Configure logging
+# Configure basic logging (will be reconfigured in main())
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
@@ -67,7 +68,7 @@ class FaceRecognitionPipeline:
         """
         self.config = config
         self.model_name = config.get("model", "ArcFace")
-        self.detector_backend = config.get("detector_backend", "yolov8")
+        self.detector_backend = config.get("detector_backend", "yunet")
         self.distance_threshold = config.get("distance_threshold", 0.35)
         self.min_face_size = config.get("min_face_size", 40)
         self.min_confidence = config.get("min_confidence", 0.5)
@@ -201,19 +202,34 @@ class FaceRecognitionPipeline:
             
             query_embedding = np.array(embedding_result[0]["embedding"])
             
-            # Find closest match
+            # Normalize query embedding for cosine similarity
+            query_norm = np.linalg.norm(query_embedding)
+            if query_norm > 0:
+                query_embedding = query_embedding / query_norm
+            
+            # Find closest match using cosine distance
+            # Note: DB embeddings should already be L2-normalized
             best_match = None
             best_distance = float('inf')
             
             for user_id, db_embedding in self._embeddings_db.items():
-                # Cosine distance
-                distance = 1 - np.dot(query_embedding, db_embedding) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(db_embedding)
-                )
+                # Normalize db_embedding if not already (for robustness)
+                db_norm = np.linalg.norm(db_embedding)
+                if db_norm > 0 and abs(db_norm - 1.0) > 0.01:
+                    db_embedding = db_embedding / db_norm
+                
+                # Cosine distance = 1 - cosine_similarity
+                # For normalized vectors: cosine_similarity = dot product
+                similarity = np.dot(query_embedding, db_embedding)
+                distance = 1.0 - similarity
                 
                 if distance < best_distance:
                     best_distance = distance
                     best_match = user_id
+            
+            # Log best match for debugging
+            if best_match:
+                logger.debug(f"Best match: {best_match} with distance {best_distance:.4f} (threshold: {self.distance_threshold})")
             
             if best_distance <= self.distance_threshold:
                 return (best_match, best_distance)
@@ -368,6 +384,11 @@ class EdgeDevice:
         self._display = display
         self._last_detections = []  # Store detections for drawing
         
+        # Store frame/bbox/debug for event image capture
+        self._pending_event_frame = None
+        self._pending_event_bbox = None
+        self._pending_event_debug = []
+        
         # Processing settings
         self._process_fps = recognition_config.get("process_fps", 1)  # Process 1 frame per second
         self._process_width = recognition_config.get("process_width", 640)  # Resize for faster detection
@@ -399,8 +420,33 @@ class EdgeDevice:
         """Callback when an event is validated."""
         logger.info(f"Event validated: user={event.user_id}, confidence={event.confidence:.2f}")
         
-        # Send event to IoT broker (video clip sent separately when ready)
-        self.iot_client.send_event(event)
+        # Attach debug entries to event for Graylog
+        if self._pending_event_debug:
+            event.debug = self._pending_event_debug
+        
+        # Send event to IoT broker with face image (synchronous for proper logging)
+        # Use stored frame and bbox from the recognition that triggered this event
+        frame = self._pending_event_frame
+        bbox = self._pending_event_bbox
+        
+        if frame is not None:
+            success = self.iot_client.send_event_sync(
+                event,
+                image=frame,
+                face_bbox=bbox
+            )
+            if success:
+                logger.info(f"Event sent with face image")
+            else:
+                logger.error(f"Event transmission failed")
+        else:
+            # Fallback: send without image
+            success = self.iot_client.send_event_sync(event)
+            if success:
+                logger.warning(f"Event sent without image (no frame available)")
+            else:
+                logger.error(f"Event transmission failed (no image)")
+        
         self.stats["events_validated"] += 1
         
         # Trigger video clip capture if buffer enabled
@@ -847,6 +893,21 @@ class EdgeDevice:
                 self.stats["faces_detected"] += 1
                 self.stats["recognitions"] += 1
                 
+                # Store frame, bbox, and debug entries for potential event (used in callback)
+                self._pending_event_frame = frame.copy()
+                self._pending_event_bbox = bbox
+                self._pending_event_debug = build_debug_entries(
+                    frame_id=self._frame_id,
+                    detection_time_ms=t_detect * 1000 if should_process else None,
+                    recognition_time_ms=t_recognize * 1000 if should_process else None,
+                    faces_detected=len(raw_faces) if raw_faces else 0,
+                    pipeline_state="recognition",
+                    extra={
+                        "distance": round(distance, 4),
+                        "track_id": track_id,
+                    }
+                )
+                
                 # Validate event
                 event = self.validator.process_recognition(
                     track_id=track_id,
@@ -939,17 +1000,48 @@ def main():
         action="store_true",
         help="Show live video with bounding boxes (requires display or X11 forwarding)"
     )
+    parser.add_argument(
+        "--json-logs",
+        action="store_true",
+        default=True,
+        help="Enable JSON structured logging (default: enabled)"
+    )
+    parser.add_argument(
+        "--no-json-logs",
+        action="store_true",
+        help="Disable JSON structured logging"
+    )
     
     args = parser.parse_args()
     
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
     # Check config exists
     if not os.path.exists(args.config):
-        logger.error(f"Config file not found: {args.config}")
-        logger.info("Create config from template: /opt/qraie/config/device_config.json")
+        print(f"ERROR: Config file not found: {args.config}")
+        print("Create config from template: /opt/qraie/config/device_config.json")
         sys.exit(1)
+    
+    # Load config to get device_id for logging
+    try:
+        with open(args.config, 'r') as f:
+            config = json.load(f)
+        device_id = config.get("device_id", "unknown")
+    except Exception as e:
+        print(f"ERROR: Failed to load config: {e}")
+        sys.exit(1)
+    
+    # Set up structured logging
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    use_json = args.json_logs and not args.no_json_logs
+    
+    setup_logging(
+        device_id=device_id,
+        log_dir="logs",
+        console_level=log_level,
+        file_level=logging.DEBUG,
+        json_logs=use_json,
+    )
+    
+    logger.info(f"Logging initialized: device_id={device_id}, json={use_json}, level={log_level}")
     
     # Create and start device
     device = EdgeDevice(args.config, display=args.display)

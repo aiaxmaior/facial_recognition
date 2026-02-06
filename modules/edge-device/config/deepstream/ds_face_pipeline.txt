@@ -1,0 +1,49 @@
+################################################################################
+# DeepStream RTSP Decode Pipeline (Hybrid Mode)
+# Hardware-accelerated video decode -> Python appsink for TensorRT inference
+#
+# This config is for programmatic GStreamer pipeline building, not deepstream-app.
+# See ds_pipeline.py for the actual pipeline construction.
+################################################################################
+
+# Pipeline Architecture:
+#
+#   RTSP Source (rtspsrc)
+#        |
+#   RTP Depay (rtph264depay)
+#        |
+#   H.264 Parse (h264parse)
+#        |
+#   NVDEC Hardware Decode (nvv4l2decoder)
+#        |
+#   Video Convert (nvvideoconvert)
+#        |
+#   Caps Filter (video/x-raw, format=BGRx or RGBA)
+#        |
+#   App Sink (appsink) -> Python callback
+#
+# Benefits over FFmpeg/OpenCV:
+# - Hardware H.264 decoding (NVDEC)
+# - Zero-copy GPU memory transfers
+# - Native Jetson optimization
+# - More stable RTSP handling
+
+[source]
+uri=rtsp://admin:Fanatec2025@192.168.13.119/Preview_01_sub
+latency=100
+drop-on-latency=true
+
+[decode]
+# Use nvv4l2decoder for hardware acceleration
+decoder=nvv4l2decoder
+
+[convert]
+# Output format for Python/numpy compatibility
+output_format=BGRx
+width=640
+height=360
+
+[appsink]
+max_buffers=2
+drop=true
+sync=false

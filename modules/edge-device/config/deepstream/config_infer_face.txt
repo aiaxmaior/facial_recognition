@@ -1,0 +1,42 @@
+################################################################################
+# YOLOv8-face Inference Configuration
+# FOR FALLBACK OPTION A (Full DeepStream nvinfer pipeline)
+#
+# NOTE: Currently using Hybrid Option B (Python TensorRT inference).
+# This config is kept for fallback if we need pure DeepStream inference.
+#
+# To use this, a custom C parser would need to be written for the
+# YOLOv8-pose output format (bbox + 5 face keypoints).
+################################################################################
+
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+# 0=RGB, 1=BGR
+model-color-format=0
+
+model-engine-file=models/yolov8_face/yolov8n-face.engine
+labelfile-path=config/deepstream/labels_face.txt
+
+# 0=FP32, 1=INT8, 2=FP16 mode
+network-mode=2
+num-detected-classes=1
+gie-unique-id=1
+network-type=0
+is-classifier=0
+
+cluster-mode=2
+maintain-aspect-ratio=1
+symmetric-padding=1
+scaling-filter=1
+
+# REQUIRES CUSTOM PARSER for YOLOv8-pose face output format
+# parse-bbox-func-name=NvDsInferParseYoloV8Face
+# custom-lib-path=path/to/custom_face_parser.so
+
+disable-output-host-copy=1
+
+[class-attrs-all]
+nms-iou-threshold=0.45
+pre-cluster-threshold=0.25
+topk=100

@@ -68,7 +68,7 @@ class FaceRecognitionPipeline:
         """
         self.config = config
         self.model_name = config.get("model", "ArcFace")
-        self.detector_backend = config.get("detector_backend", "yolov8")
+        self.detector_backend = config.get("detector_backend", "yolov8n")
         self.distance_threshold = config.get("distance_threshold", 0.35)
         self.min_face_size = config.get("min_face_size", 60)
         
