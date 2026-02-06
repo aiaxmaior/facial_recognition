@@ -37,7 +37,7 @@ def test_pytorch_yolo():
     print("Saved frame to /tmp/test_frame_pytorch.jpg")
     
     # Load YOLOv8-face model
-    model_path = "/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.pt"
+    model_path = "/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.pt"
     print(f"Loading YOLOv8-face model: {model_path}")
     
     try:

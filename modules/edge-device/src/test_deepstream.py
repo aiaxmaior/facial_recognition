@@ -29,7 +29,7 @@ def test_gstreamer_decode():
         return False, None
     
     # Load config
-    config_path = "/home/qdrive/facial_recognition/modules/edge-device_dev/config/config.json"
+    config_path = "/home/qdrive/facial_recognition/modules/edge-device/config/config.json"
     with open(config_path) as f:
         config = json.load(f)
     
@@ -123,7 +123,7 @@ def test_tensorrt_inference(test_frame=None):
     print("TEST 2: TensorRT YOLOv8-face Inference")
     print("="*60)
     
-    engine_path = "/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.engine"
+    engine_path = "/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.engine"
     
     try:
         import tensorrt as trt
