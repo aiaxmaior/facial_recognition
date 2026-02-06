@@ -23,6 +23,7 @@ from urllib3.util.retry import Retry
 from .schemas.event_schemas import EventPayload, FacialIdEvent, EmotionEvent
 from .schemas.sync_schemas import SyncRequest, SyncResponse
 from .image_utils import compress_image_for_event
+from .logging_config import EventLogger
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,9 @@ class IoTClient:
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
         self._session: Optional[requests.Session] = None
+        
+        # Event logger for structured logging
+        self.event_logger = EventLogger(device_id=config.device_id)
         
         # Callbacks
         self.on_event_sent: Optional[Callable[[str], None]] = None
@@ -333,7 +337,11 @@ class IoTClient:
         Returns:
             True if sent successfully
         """
+        # Track timing
+        start_time = time.time()
+        
         # Compress and attach image
+        has_image = False
         if image is not None and self.config.compress_images:
             event.image = compress_image_for_event(
                 image,
@@ -341,8 +349,22 @@ class IoTClient:
                 initial_quality=self.config.image_quality,
                 face_bbox=face_bbox,
             )
+            has_image = event.image is not None
         
         url = f"{self.config.broker_url}/data/events"
+        
+        # Get event ID for logging
+        client_event_id = getattr(event, 'event_id', None) or 'unknown'
+        
+        # Log event creation
+        self.event_logger.log_event_created(
+            event_id=client_event_id,
+            event_type=getattr(event, 'event_type', 'face_recognition'),
+            person_id=getattr(event, 'person_id', None),
+            person_name=getattr(event, 'person_name', None),
+            confidence=getattr(event, 'confidence', None),
+            metadata=event.metadata.model_dump() if hasattr(event, 'metadata') and event.metadata else None,
+        )
         
         # Build Socket.IO message format
         if hasattr(event, 'to_broker_message'):
@@ -361,21 +383,37 @@ class IoTClient:
                 {"data": event.to_broker_json()}
             ]
         
+        # Add image to message data if present
+        if has_image and len(message) > 1 and "data" in message[1]:
+            message[1]["data"]["image"] = event.image
+        
         # Choose payload format based on config
         if self.config.payload_format == "raw":
             # Raw Socket.IO format - direct array (matches schema exactly)
             payload = message
         else:
-            # Wrapped format (legacy)
+            # Wrapped format (default)
             payload = {
                 "device_id": self.config.device_id,
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "messages": [message],
             }
         
+        # Calculate payload size
+        payload_json = json.dumps(payload, default=str)
+        payload_size = len(payload_json.encode('utf-8'))
+        
         try:
             logger.info(f"[EVENT TX] Sending to: {url} (format={self.config.payload_format})")
-            logger.info(f"[EVENT TX] Payload preview: {json.dumps(payload, default=str)[:300]}...")
+            logger.debug(f"[EVENT TX] Payload size: {payload_size} bytes, has_image: {has_image}")
+            
+            # Log event sent
+            self.event_logger.log_event_sent(
+                event_id=client_event_id,
+                endpoint=url,
+                payload_size=payload_size,
+                has_image=has_image,
+            )
             
             response = self._session.post(
                 url,
@@ -384,17 +422,51 @@ class IoTClient:
                 verify=self.config.verify_ssl,
             )
             
-            logger.info(f"[EVENT TX] Response: {response.status_code} - {response.text[:200]}")
+            response_time_ms = (time.time() - start_time) * 1000
+            
             response.raise_for_status()
             
+            # Parse and log full broker response
+            try:
+                broker_response = response.json()
+            except json.JSONDecodeError:
+                broker_response = {"raw_response": response.text}
+            
+            # Log acknowledgment with full response details
+            self.event_logger.log_event_acknowledged(
+                client_event_id=client_event_id,
+                broker_response=broker_response,
+                response_time_ms=response_time_ms,
+            )
+            
             self.stats["events_sent"] += 1
-            logger.info(f"[EVENT TX] Event sent successfully: {event.event_id}")
+            self.stats["bytes_sent"] += payload_size
+            
+            logger.info(
+                f"[EVENT TX] Event acknowledged: {client_event_id} -> "
+                f"{broker_response.get('event_id', 'N/A')} "
+                f"({response_time_ms:.0f}ms)"
+            )
             return True
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"[EVENT TX] Failed to send event: {e}")
+            response_time_ms = (time.time() - start_time) * 1000
+            status_code = None
+            response_body = None
+            
             if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"[EVENT TX] Response body: {e.response.text[:500]}")
+                status_code = e.response.status_code
+                response_body = e.response.text[:1000]  # Capture more for debugging
+            
+            # Log failure with details
+            self.event_logger.log_event_failed(
+                event_id=client_event_id,
+                error=str(e),
+                status_code=status_code,
+                response_body=response_body,
+            )
+            
+            logger.error(f"[EVENT TX] Failed: {client_event_id} - {e} ({response_time_ms:.0f}ms)")
             self.stats["events_failed"] += 1
             return False
     

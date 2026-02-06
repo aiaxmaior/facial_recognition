@@ -1,0 +1,39 @@
+# NvDCF Tracker Configuration for Face Tracking
+# Lightweight config optimized for Jetson Orin Nano
+
+%YAML:1.0
+
+BaseConfig:
+  minDetectorConfidence: 0.3
+  
+TargetManagement:
+  enableBboxUnClipping: 1
+  maxTargetsPerStream: 50
+  minIouDiff4NewTarget: 0.7
+  preserveStreamUpdateOrder: 0
+  maxShadowTrackingAge: 15
+  probationAge: 2
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  useUniqueID: 1
+
+DataAssociator:
+  dataAssociatorType: 0
+  associationMatcherType: 1
+  checkClassMatch: 0
+  
+  # Association thresholds
+  minMatchingScore4Overall: 0.0
+  minMatchingScore4SizeSimilarity: 0.5
+  minMatchingScore4Appearance: 0.0
+  matchingScoreWeight4SizeSimilarity: 0.6
+  matchingScoreWeight4Appearance: 0.4
+  tentativeDetectorConfidence: 0.3
+
+StateEstimator:
+  stateEstimatorType: 1
+  processNoiseVar4Loc: 20.0
+  processNoiseVar4Size: 10.0
+  measurementNoiseVar4Loc: 4.0
+  measurementNoiseVar4Size: 4.0

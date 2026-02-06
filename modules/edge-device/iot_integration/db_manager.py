@@ -212,12 +212,24 @@ class DatabaseManager:
             finally:
                 conn.close()
     
-    def get_all_enrollments(self, model_filter: str = None) -> Dict[str, np.ndarray]:
+    def get_all_enrollments(
+        self,
+        model_filter: str = None,
+        detector_filter: str = None,
+    ) -> Dict[str, np.ndarray]:
         """
         Get all enrollments as a dictionary for matching.
         
+        Tries enrolled_users table first, falls back to faces table
+        (created by enrollment-modal) if enrolled_users is empty.
+        
+        When switching detector (e.g. retinaface -> yolov8n-face), pass
+        model_filter and detector_filter so only compatible embeddings are
+        loaded. Embeddings from a different detector are not comparable.
+        
         Args:
-            model_filter: Optional model name to filter by
+            model_filter: Optional model name to filter by (e.g. "ArcFace")
+            detector_filter: Optional detector name to filter by (e.g. "yolov8n" or "yolov8n-face")
             
         Returns:
             Dict mapping user_id -> embedding numpy array
@@ -228,26 +240,72 @@ class DatabaseManager:
             conn = self._get_connection()
             try:
                 cursor = conn.cursor()
-                if model_filter:
-                    cursor.execute(
-                        "SELECT user_id, embedding FROM enrolled_users WHERE model = ?",
-                        (model_filter,)
-                    )
-                else:
-                    cursor.execute("SELECT user_id, embedding FROM enrolled_users")
                 
-                for row in cursor.fetchall():
-                    embedding = np.frombuffer(row["embedding"], dtype=np.float32)
-                    enrollments[row["user_id"]] = embedding
+                # First try enrolled_users table
+                try:
+                    if model_filter or detector_filter:
+                        conditions, params = [], []
+                        if model_filter:
+                            conditions.append("model = ?")
+                            params.append(model_filter)
+                        if detector_filter:
+                            conditions.append("detector = ?")
+                            params.append(detector_filter)
+                        cursor.execute(
+                            "SELECT user_id, embedding FROM enrolled_users WHERE " + " AND ".join(conditions),
+                            params,
+                        )
+                    else:
+                        cursor.execute("SELECT user_id, embedding FROM enrolled_users")
+                    
+                    for row in cursor.fetchall():
+                        embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+                        enrollments[row["user_id"]] = embedding
+                except Exception as e:
+                    logger.debug(f"enrolled_users table not available: {e}")
+                
+                # If no enrollments found, try legacy 'faces' table (from enrollment-modal)
+                if not enrollments:
+                    try:
+                        # Check if faces table exists
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faces'")
+                        if cursor.fetchone():
+                            logger.info("Falling back to 'faces' table for enrollments")
+                            
+                            # Use embedding_normalized if available (already L2-normalized)
+                            # Otherwise use raw embedding
+                            if model_filter:
+                                cursor.execute("""
+                                    SELECT name, COALESCE(embedding_normalized, embedding) as embedding 
+                                    FROM faces WHERE model = ?
+                                """, (model_filter,))
+                            else:
+                                cursor.execute("""
+                                    SELECT name, COALESCE(embedding_normalized, embedding) as embedding 
+                                    FROM faces
+                                """)
+                            
+                            for row in cursor.fetchall():
+                                embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+                                # Use 'name' as the user_id
+                                enrollments[row["name"]] = embedding
+                            
+                            logger.info(f"Loaded {len(enrollments)} enrollments from 'faces' table")
+                    except Exception as e:
+                        logger.warning(f"Failed to read from faces table: {e}")
                 
                 return enrollments
             finally:
                 conn.close()
     
     # Alias for backward compatibility
-    def get_all_embeddings(self, model_filter: str = None) -> Dict[str, np.ndarray]:
+    def get_all_embeddings(
+        self,
+        model_filter: str = None,
+        detector_filter: str = None,
+    ) -> Dict[str, np.ndarray]:
         """Alias for get_all_enrollments()."""
-        return self.get_all_enrollments(model_filter)
+        return self.get_all_enrollments(model_filter=model_filter, detector_filter=detector_filter)
     
     def get_all_enrollment_records(self) -> List[EnrollmentRecord]:
         """

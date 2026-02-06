@@ -15,6 +15,9 @@ import numpy as np
 # SQLite Table Definitions (as SQL strings)
 # =============================================================================
 
+# enrolled_users: face embeddings for recognition.
+# detector + model must match the recognition pipeline (e.g. yolov8n-face + ArcFace).
+# Do not reuse embeddings from a different detector (e.g. retinaface) when switching to yolov8n-face.
 ENROLLED_USERS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS enrolled_users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
