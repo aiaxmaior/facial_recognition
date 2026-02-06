@@ -40,7 +40,7 @@ def preprocess(frame, input_size=640):
 
 def test_onnx():
     """Test ONNX inference"""
-    onnx_path = "/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.onnx"
+    onnx_path = "/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.onnx"
     
     print(f"Loading ONNX model: {onnx_path}")
     session = ort.InferenceSession(onnx_path, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])

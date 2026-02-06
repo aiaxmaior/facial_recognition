@@ -26,7 +26,7 @@ def test_trt():
     print("CUDA context created")
     
     try:
-        engine_path = "/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.engine"
+        engine_path = "/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.engine"
         
         logger = trt.Logger(trt.Logger.WARNING)
         

@@ -11,9 +11,9 @@ net-scale-factor=0.0039215697906911373
 model-color-format=0
 
 # Model files (absolute paths)
-onnx-file=/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.onnx
-model-engine-file=/home/qdrive/facial_recognition/modules/edge-device_dev/models/yolov8_face/yolov8n-face.engine
-labelfile-path=/home/qdrive/facial_recognition/modules/edge-device_dev/config/labels_face.txt
+onnx-file=/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.onnx
+model-engine-file=/home/qdrive/facial_recognition/modules/edge-device/models/yolov8_face/yolov8n-face.engine
+labelfile-path=/home/qdrive/facial_recognition/modules/edge-device/config/labels_face.txt
 
 # 0=FP32, 1=INT8, 2=FP16 mode
 network-mode=2
@@ -36,7 +36,7 @@ scaling-filter=1
 
 # Custom YOLO parser
 parse-bbox-func-name=NvDsInferParseCustomYoloV8
-custom-lib-path=/home/qdrive/facial_recognition/modules/edge-device_dev/lib/libnvdsinfer_custom_impl_Yolo.so
+custom-lib-path=/home/qdrive/facial_recognition/modules/edge-device/lib/libnvdsinfer_custom_impl_Yolo.so
 
 # Performance optimization
 batch-size=1

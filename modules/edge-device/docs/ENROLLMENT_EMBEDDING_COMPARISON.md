@@ -8,7 +8,7 @@ Comparison of `enrollments.db`, `enrollments1.db` (old retinaface), and the curr
 
 | Source | Table | Notes |
 |--------|--------|--------|
-| **enrollments.db** | (none or different) | In `edge-device_dev/data`, `enrolled_users` may not exist yet (DB not initialized or different schema). |
+| **enrollments.db** | (none or different) | In `edge-device/data`, `enrolled_users` may not exist yet (DB not initialized or different schema). |
 | **enrollments1.db** | `enrolled_users` | Same schema as `iot_integration/schemas/db_schemas.py`. |
 | **Current code** | `enrolled_users` | `user_id`, `display_name`, `model`, `detector`, `embedding` (BLOB), `embedding_dim`, `sync_version`, `synced_at`, `created_at`. |
 
