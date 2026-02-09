@@ -110,8 +110,8 @@ function calculateHeadPose(
   const chinZ = chin.z;
   const zDiffUD = (foreheadZ - chinZ) / faceScale;
   
-  // Scale to degrees - reduced by 50% for better calibration
-  let pitch = zDiffUD * 125;
+  // Scale to degrees - calibrated for accurate readings
+  let pitch = zDiffUD * 80;
   
   // Clamp to reasonable range
   yaw = Math.max(-90, Math.min(90, yaw));
