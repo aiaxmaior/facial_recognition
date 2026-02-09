@@ -15,9 +15,10 @@ class AudioService {
   private lastAdvisoryTime: number = 0;
   private advisoryCount: number = 0;
   
-  // Direction audio tracking - delay guidance after direction plays
-  private lastDirectionTime: number = 0;
-  private directionGracePeriod: number = 3000; // 3 seconds after direction before guidance
+  // Direction audio tracking - block guidance after direction plays
+  private guidanceBlocked: boolean = false;
+  private guidanceBlockTimer: ReturnType<typeof setTimeout> | null = null;
+  private directionGracePeriod: number = 2500; // 2.5 seconds after direction before guidance
 
   constructor(audioBasePath: string = '/audio') {
     this.audioBasePath = audioBasePath;
@@ -115,8 +116,7 @@ class AudioService {
     const filename = audioMap[poseName];
     if (filename) {
       this.play(filename, true);
-      this.lastDirectionTime = Date.now(); // Track when direction audio played
-      console.log(`[Audio] Direction played, guidance delayed for ${this.directionGracePeriod}ms`);
+      console.log(`[Audio] Direction played: ${filename}`);
     }
   }
 
@@ -143,10 +143,27 @@ class AudioService {
 
   /**
    * Reset advisory audio state (call when moving to new step)
+   * Also blocks guidance audio to prevent playing over direction audio
    */
   resetAdvisoryState(): void {
     this.lastAdvisoryTime = 0;
     this.advisoryCount = 0;
+    
+    // Block guidance immediately
+    this.guidanceBlocked = true;
+    
+    // Clear any existing timer
+    if (this.guidanceBlockTimer) {
+      clearTimeout(this.guidanceBlockTimer);
+    }
+    
+    // Unblock after grace period
+    this.guidanceBlockTimer = setTimeout(() => {
+      this.guidanceBlocked = false;
+      console.log(`[Audio] Guidance unblocked after ${this.directionGracePeriod}ms`);
+    }, this.directionGracePeriod);
+    
+    console.log(`[Audio] Advisory state reset, guidance BLOCKED for ${this.directionGracePeriod}ms`);
   }
 
   /**
@@ -158,14 +175,11 @@ class AudioService {
       return;
     }
 
-    const now = Date.now();
-    
-    // Check if we're still in the grace period after direction audio
-    const timeSinceDirection = now - this.lastDirectionTime;
-    if (timeSinceDirection < this.directionGracePeriod) {
+    // Check if guidance is blocked (grace period after direction audio)
+    if (this.guidanceBlocked) {
       // Only log occasionally to avoid spam
-      if (Math.random() < 0.02) {
-        console.log(`[Audio] Advisory skipped - grace period (${(timeSinceDirection/1000).toFixed(1)}s < ${this.directionGracePeriod/1000}s)`);
+      if (Math.random() < 0.01) {
+        console.log(`[Audio] Advisory skipped - guidance blocked (grace period)`);
       }
       return;
     }
@@ -176,6 +190,7 @@ class AudioService {
       return;
     }
 
+    const now = Date.now();
     const timeSinceLast = now - this.lastAdvisoryTime;
 
     if (timeSinceLast < ADVISORY_AUDIO_INTERVAL * 1000) {

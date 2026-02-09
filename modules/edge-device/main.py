@@ -307,9 +307,12 @@ class EdgeDevice:
         
         # Video buffer
         self.video_buffer: Optional[VideoRingBuffer] = None
-        if buffer_config.get("enabled", True):
+        buffer_enabled = buffer_config.get("enabled", False)  # Default to False for memory efficiency
+        if buffer_enabled:
+            buffer_seconds = buffer_config.get("duration_seconds", 15)
+            logger.info(f"Video buffer ENABLED: {buffer_seconds}s @ {self.target_fps}fps (~{buffer_seconds * self.target_fps * 2.64:.0f}MB RAM)")
             self.video_buffer = VideoRingBuffer(
-                buffer_seconds=buffer_config.get("duration_seconds", 15),
+                buffer_seconds=buffer_seconds,
                 fps=self.target_fps,
                 buffer_path=buffer_config.get("buffer_path", "/tmp/video_buffer"),
                 pre_event_seconds=buffer_config.get("pre_event_seconds", 10),
@@ -317,6 +320,8 @@ class EdgeDevice:
             )
             # Register callback for when clips are ready
             self.video_buffer.on_clip_ready = self._on_clip_ready
+        else:
+            logger.info("Video buffer DISABLED (set video_buffer.enabled=true in config to enable)")
         
         # IoT client
         iot_config = IoTClientConfig(

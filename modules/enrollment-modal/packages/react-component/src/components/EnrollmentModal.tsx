@@ -140,6 +140,21 @@ export function EnrollmentModal({
     }
   }, [currentPose, captureState, processPose, currentTarget, checkPoseMatch, isCountingDown]);
 
+  // Audio cues for step changes — MUST be declared before advisory effect
+  // so that resetAdvisoryState() blocks guidance before playAdvisory() runs
+  // (React fires effects in declaration order within the same commit)
+  useEffect(() => {
+    if (currentStep !== prevStepRef.current && captureState === 'capturing') {
+      prevStepRef.current = currentStep;
+      audioService.resetAdvisoryState();
+      
+      if (currentTarget) {
+        console.log(`[EnrollmentModal] 🔊 Playing direction audio for: ${currentTarget.name}`);
+        audioService.playDirection(currentTarget.name);
+      }
+    }
+  }, [currentStep, captureState, currentTarget]);
+
   // Secondary audio guidance when pose doesn't match
   useEffect(() => {
     if (captureState !== 'capturing' || !currentTarget || isCountingDown || !currentPose.detected) {
@@ -194,19 +209,6 @@ export function EnrollmentModal({
       }
     }
   }, [captureState, isCountingDown, countdownSeconds, captureFrame, doCapture, currentStep]);
-
-  // Audio cues for step changes
-  useEffect(() => {
-    if (currentStep !== prevStepRef.current && captureState === 'capturing') {
-      prevStepRef.current = currentStep;
-      audioService.resetAdvisoryState();
-      
-      if (currentTarget) {
-        console.log(`[EnrollmentModal] 🔊 Playing direction audio for: ${currentTarget.name}`);
-        audioService.playDirection(currentTarget.name);
-      }
-    }
-  }, [currentStep, captureState, currentTarget]);
 
   // Audio cue for countdown beeps
   useEffect(() => {

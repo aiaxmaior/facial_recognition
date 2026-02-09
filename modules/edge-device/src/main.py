@@ -272,8 +272,9 @@ class FaceRecognitionPipeline:
             
             bbox = [x, y, fw, fh]
             
-            # Crop face from original frame for better recognition quality
-            # Add margin for better recognition
+            # Crop face from original full-resolution frame for maximum recognition quality
+            # This ensures faces at 15' distance have sufficient resolution for recognition
+            # Add margin (20%) for better recognition context
             margin = int(max(fw, fh) * 0.2)
             x1 = max(0, x - margin)
             y1 = max(0, y - margin)
@@ -283,6 +284,13 @@ class FaceRecognitionPipeline:
             face_crop = frame[y1:y2, x1:x2]
             if face_crop.size == 0:
                 logger.warning(f"[RECOGNIZE] Empty face crop at ({x},{y},{fw},{fh})")
+                continue
+            
+            # Ensure minimum face size for recognition quality
+            crop_h, crop_w = face_crop.shape[:2]
+            min_crop_size = 80  # Minimum crop size for good recognition
+            if crop_w < min_crop_size or crop_h < min_crop_size:
+                logger.debug(f"[RECOGNIZE] Face crop too small: {crop_w}x{crop_h}, skipping recognition")
                 continue
             
             # Recognize using the cropped face
@@ -391,7 +399,12 @@ class EdgeDevice:
         
         # Processing settings
         self._process_fps = recognition_config.get("process_fps", 1)  # Process 1 frame per second
-        self._process_width = recognition_config.get("process_width", 640)  # Resize for faster detection
+        # Detection resolution: high resolution (2560px default) for better distant face detection
+        # Recognition still uses full-resolution crops from original frame
+        # At 15ft with 90° FOV: face is ~42px in 2560px frame (meets 30px min_face_size threshold)
+        # If camera is already 2560px, detection runs at full resolution (no downscaling)
+        self._detection_width = recognition_config.get("detection_width", 2560)  # Detection resolution
+        self._process_width = recognition_config.get("process_width", 640)  # Legacy: kept for backward compat
         self._last_process_time = 0
         
         # Statistics
@@ -520,11 +533,13 @@ class EdgeDevice:
         logger.info(f"Connecting to camera: {self.rtsp_url.split('@')[-1]}")  # Hide password
         
         # Use GStreamer pipeline for better RTSP handling on Jetson
-        # Scale to process_width for efficiency
+        # Capture at full resolution for better recognition quality
+        # Detection will be done at detection_width (1280px) in software
+        # Recognition uses full-resolution crops for maximum accuracy
         gst_pipeline = (
             f"rtspsrc location={self.rtsp_url} latency=0 ! "
             "rtph264depay ! h264parse ! nvv4l2decoder ! "
-            f"nvvidconv ! video/x-raw,width={self._process_width},format=BGRx ! "
+            "nvvidconv ! video/x-raw,format=BGRx ! "
             "videoconvert ! video/x-raw,format=BGR ! appsink"
         )
         
@@ -532,7 +547,9 @@ class EdgeDevice:
             # Try GStreamer first (optimized for Jetson)
             self.camera = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
             if self.camera.isOpened():
-                logger.info(f"Connected via GStreamer pipeline @ {self._process_width}px")
+                actual_w = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                logger.info(f"Connected via GStreamer pipeline @ {actual_w}x{actual_h} (full resolution)")
                 return True
         except Exception as e:
             logger.debug(f"GStreamer failed: {e}")
@@ -541,12 +558,11 @@ class EdgeDevice:
         try:
             self.camera = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
             if self.camera.isOpened():
-                # Set capture resolution
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self._process_width)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self._process_width * 9 / 16))  # Assume 16:9
+                # Capture at full resolution for better recognition quality
+                # Don't downscale here - let detection pipeline handle it
                 actual_w = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
                 actual_h = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                logger.info(f"Connected via FFmpeg @ {actual_w}x{actual_h}")
+                logger.info(f"Connected via FFmpeg @ {actual_w}x{actual_h} (full resolution)")
                 return True
         except Exception as e:
             logger.debug(f"FFmpeg failed: {e}")
@@ -836,39 +852,54 @@ class EdgeDevice:
             if should_process:
                 self._last_process_time = current_time
                 
-                # Downscale frame for faster detection
+                # Optimized two-stage approach:
+                # 1. Detect at high resolution (2560px default) for better distant face detection
+                #    At 15ft with 90° FOV: face is ~42px in 2560px frame
+                # 2. Recognize from full-resolution crops for maximum accuracy
                 orig_h, orig_w = frame.shape[:2]
-                scale = self._process_width / max(orig_w, orig_h)
-                if scale < 1.0:
-                    small_frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-                else:
-                    small_frame = frame
-                    scale = 1.0
                 
-                # Benchmark: Detect faces on downscaled frame
+                # Use detection_width (default 2560px) for detection to catch distant faces
+                # If camera is already at this resolution, no downscaling occurs (best for 15ft)
+                # If camera is higher res, we downscale but preserve face size for detection
+                detection_scale = self._detection_width / max(orig_w, orig_h)
+                
+                if detection_scale < 1.0:
+                    # Downscale for detection (but keep higher than 640px for distant faces)
+                    detect_frame = cv2.resize(frame, None, fx=detection_scale, fy=detection_scale, interpolation=cv2.INTER_LINEAR)
+                else:
+                    # Frame is smaller than detection_width, use as-is
+                    detect_frame = frame
+                    detection_scale = 1.0
+                
+                # Benchmark: Detect faces on detection-resolution frame
                 t0 = time.time()
-                raw_faces_small = self.recognition.detect_faces(small_frame)
+                raw_faces_detect = self.recognition.detect_faces(detect_frame)
                 t_detect = time.time() - t0
                 
                 # Scale face coordinates back to original frame size
+                # When detection_scale < 1.0, coordinates need to be scaled up by (1/detection_scale)
                 raw_faces = []
-                for face in raw_faces_small:
-                    conf = face.get("confidence", 0)
-                    region = face.get("facial_area", {})
-                    # Scale coordinates back up
-                    scaled_region = {
-                        "x": int(region.get("x", 0) / scale),
-                        "y": int(region.get("y", 0) / scale),
-                        "w": int(region.get("w", 0) / scale),
-                        "h": int(region.get("h", 0) / scale),
-                    }
-                    # Copy other fields
-                    scaled_face = face.copy()
-                    scaled_face["facial_area"] = scaled_region
-                    raw_faces.append(scaled_face)
+                if detection_scale > 0:
+                    inv_scale = 1.0 / detection_scale
+                    for face in raw_faces_detect:
+                        conf = face.get("confidence", 0)
+                        region = face.get("facial_area", {})
+                        # Scale coordinates back up to original frame coordinates
+                        scaled_region = {
+                            "x": int(region.get("x", 0) * inv_scale),
+                            "y": int(region.get("y", 0) * inv_scale),
+                            "w": int(region.get("w", 0) * inv_scale),
+                            "h": int(region.get("h", 0) * inv_scale),
+                        }
+                        # Copy other fields
+                        scaled_face = face.copy()
+                        scaled_face["facial_area"] = scaled_region
+                        raw_faces.append(scaled_face)
+                else:
+                    raw_faces = raw_faces_detect
                 
                 if raw_faces:
-                    logger.info(f"[DETECT] Found {len(raw_faces)} face(s) in {t_detect*1000:.0f}ms @ {small_frame.shape[1]}x{small_frame.shape[0]}")
+                    logger.info(f"[DETECT] Found {len(raw_faces)} face(s) in {t_detect*1000:.0f}ms @ {detect_frame.shape[1]}x{detect_frame.shape[0]} (orig: {orig_w}x{orig_h})")
                     for i, face in enumerate(raw_faces):
                         conf = face.get("confidence", 0)
                         region = face.get("facial_area", {})
@@ -884,7 +915,7 @@ class EdgeDevice:
                     for track_id, user_id, distance, bbox in results:
                         logger.info(f"[RECOGNIZE] {user_id}: distance={distance:.3f}, match={'YES' if distance <= self.recognition.distance_threshold else 'NO'}")
                 
-                logger.debug(f"[PERF] Detect: {t_detect*1000:.0f}ms ({small_frame.shape[1]}x{small_frame.shape[0]}), Recognize: {t_recognize*1000:.0f}ms, Total: {(t_detect+t_recognize)*1000:.0f}ms")
+                logger.debug(f"[PERF] Detect: {t_detect*1000:.0f}ms ({detect_frame.shape[1]}x{detect_frame.shape[0]}), Recognize: {t_recognize*1000:.0f}ms, Total: {(t_detect+t_recognize)*1000:.0f}ms")
                 
                 # Cache for display
                 self._last_detections = (raw_faces, results)

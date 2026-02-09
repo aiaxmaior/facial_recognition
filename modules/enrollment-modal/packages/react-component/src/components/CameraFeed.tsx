@@ -267,6 +267,10 @@ export function CameraFeed({
 
       // Countdown number
       ctx.save();
+      // Counter the CSS scaleX(-1) mirror so numbers read correctly
+      ctx.scale(-1, 1);
+      ctx.translate(-w, 0);
+
       ctx.fillStyle = 'rgba(0, 255, 0, 1)';
       ctx.font = 'bold 72px Arial, sans-serif';  // Smaller font to fit
       ctx.textAlign = 'center';
@@ -305,6 +309,10 @@ export function CameraFeed({
 
     if (statusText) {
       ctx.save();
+      // Counter the CSS scaleX(-1) mirror so text reads correctly
+      ctx.scale(-1, 1);
+      ctx.translate(-w, 0);
+
       ctx.fillStyle = statusColor;
       ctx.font = 'bold 24px Arial, sans-serif';
       ctx.textAlign = 'center';
@@ -319,46 +327,6 @@ export function CameraFeed({
       ctx.fillText(statusText, centerX, h - 30);
       ctx.restore();
     }
-
-    // Debug info (show yaw/pitch values and target ranges)
-    ctx.save();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    
-    if (currentPose.detected && targetPose) {
-      const yawInRange = currentPose.yaw >= targetPose.yawRange[0] && currentPose.yaw <= targetPose.yawRange[1];
-      const pitchInRange = currentPose.pitch >= targetPose.pitchRange[0] && currentPose.pitch <= targetPose.pitchRange[1];
-      
-      ctx.fillStyle = yawInRange ? 'rgba(0, 255, 0, 0.9)' : 'rgba(255, 100, 100, 0.9)';
-      ctx.fillText(
-        `Yaw: ${currentPose.yaw.toFixed(0)}° (need ${targetPose.yawRange[0]} to ${targetPose.yawRange[1]})`,
-        10,
-        h - 30
-      );
-      
-      ctx.fillStyle = pitchInRange ? 'rgba(0, 255, 0, 0.9)' : 'rgba(255, 100, 100, 0.9)';
-      ctx.fillText(
-        `Pitch: ${currentPose.pitch.toFixed(0)}° (need ${targetPose.pitchRange[0]} to ${targetPose.pitchRange[1]})`,
-        10,
-        h - 10
-      );
-    } else if (currentPose.detected) {
-      ctx.fillText(
-        `Yaw: ${currentPose.yaw.toFixed(0)}° Pitch: ${currentPose.pitch.toFixed(0)}°`,
-        10,
-        h - 10
-      );
-    } else {
-      ctx.fillStyle = 'rgba(255, 100, 100, 0.9)';
-      ctx.fillText(
-        `Face detection: waiting...`,
-        10,
-        h - 10
-      );
-    }
-    ctx.restore();
   }, [videoRef, currentPose, targetPose, isCountingDown, countdownSeconds, isPoseValid, isStabilizing]);
 
   // Animation loop for overlay
@@ -477,7 +445,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     objectFit: 'cover',
-    // Note: NOT mirroring here - detection handles it
+    transform: 'scaleX(-1)', // Mirror for natural selfie view
   },
   hiddenCanvas: {
     display: 'none',
@@ -489,6 +457,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     pointerEvents: 'none',
+    transform: 'scaleX(-1)', // Mirror to match video
   },
   instructionBar: {
     position: 'absolute',
