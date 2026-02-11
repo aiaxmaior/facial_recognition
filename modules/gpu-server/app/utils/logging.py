@@ -13,7 +13,7 @@ class LogHandler:
     """
     Custom log handler that stores logs and broadcasts to WebSocket clients.
     
-    Compatible with loguru.
+    Compatible with loguru. Safe to call from both async and sync (thread pool) contexts.
     """
     
     def __init__(self, log_queue: Deque, websocket_connections: List[WebSocket]):
@@ -26,9 +26,17 @@ class LogHandler:
         if log_entry:
             self.log_queue.append(log_entry)
             
-            # Broadcast to WebSocket clients (non-blocking)
+            # Broadcast to WebSocket clients (non-blocking, thread-safe)
             if self.websocket_connections:
-                asyncio.create_task(self._broadcast(log_entry))
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.call_soon_threadsafe(
+                        lambda entry=log_entry: asyncio.ensure_future(self._broadcast(entry))
+                    )
+                except RuntimeError:
+                    # No running event loop (called from thread pool) -- skip broadcast
+                    # Logs are still stored in the deque and accessible via /logs endpoint
+                    pass
     
     async def _broadcast(self, message: str):
         """Broadcast message to all connected WebSocket clients"""
@@ -160,7 +168,7 @@ def get_log_viewer_html() -> str:
 </head>
 <body>
     <div class="header">
-        <h1>🖥️ GPU Server - Log Viewer</h1>
+        <h1>GPU Server - Log Viewer</h1>
         <div class="status">
             <div class="status-dot" id="statusDot"></div>
             <span id="statusText">Disconnected</span>
@@ -188,7 +196,7 @@ def get_log_viewer_html() -> str:
         
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+            const wsUrl = `${protocol}//${window.location.host}/api/ws/logs`;
             
             ws = new WebSocket(wsUrl);
             
@@ -266,7 +274,7 @@ def get_log_viewer_html() -> str:
         }
         
         // Load existing logs
-        fetch('/logs?limit=500')
+        fetch('/api/logs?limit=500')
             .then(response => response.json())
             .then(data => {
                 data.logs.forEach(log => addLogEntry(log));

@@ -1,0 +1,63 @@
+services:
+  mcp-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: mcp-client-app
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:10011/mcp
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+        restart: true
+    develop:
+      watch:
+        - action: sync
+          path: ./
+          target: /app
+          ignore:
+            - .git/
+            - .env
+            - .venv/
+            - __pycache__/
+        - action: rebuild
+          path: requirements.txt
+
+
+  mcp-server:
+    build: 
+      context: ../mcp_server
+      dockerfile: Dockerfile.dev
+    container_name: mcp-server-app
+    ports:
+      - "10011:10011"
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10011/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    develop:
+      watch:
+        - action: sync
+          path: ../mcp_server/
+          target: /app
+          ignore:
+            - .git/
+            - .env
+            - .venv/
+            - __pycache__/
+        - action: rebuild
+          path: ../mcp_server/requirements.txt
+
+networks:
+  mcp-network:
+    driver: bridge

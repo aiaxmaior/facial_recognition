@@ -1,0 +1,33 @@
+services:
+  mcp-client:
+    build: .
+    container_name: mcp-client-app
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    environment:
+      - TENANT_ID="ACETAXI"
+      - CONF_URL="https://qraie_ai-b.qryde.net/config/dbconnstr"
+      - MCP_SERVER_URL=http://mcp-server:10011/mcp
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+        restart: true
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
+  mcp-server:
+    build: ../mcp_server
+    container_name: mcp-server-app
+    ports:
+      - "10011:10011"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10011/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s

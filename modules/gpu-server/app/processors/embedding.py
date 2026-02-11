@@ -10,8 +10,11 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
+import cv2
 import numpy as np
 from PIL import Image
+
+from app.processors.augmentation import augment_batch
 
 
 class EmbeddingProcessor:
@@ -36,7 +39,7 @@ class EmbeddingProcessor:
         """Initialize the DeepFace model"""
         try:
             # Run in thread pool to not block async
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_model)
             self.is_ready = True
             logger.info(f"EmbeddingProcessor initialized with model: {self.model_name}")
@@ -92,7 +95,7 @@ class EmbeddingProcessor:
             return self._mock_process(employee_id, images)
         
         # Run processing in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None, 
             self._process_sync, 
@@ -109,63 +112,99 @@ class EmbeddingProcessor:
         images: List[Dict[str, Any]],
         options: Optional[dict] = None
     ) -> Dict[str, Any]:
-        """Synchronous processing (runs in thread)"""
-        embeddings = []
+        """
+        Synchronous processing (runs in thread).
+
+        Pipeline:
+        1. Decode each received image (up to 5 poses).
+        2. Augment: for every original, generate 5 photometric variants
+           (bright, dark_noisy, blur_shift, warm, compressed).
+           → 5 originals + 25 augmented = **30 images**.
+        3. Run ArcFace embedding on each of the 30 images.
+        4. Average and L2-normalise → single 512-dim enrollment vector.
+        """
         front_image = None
-        
+        raw_arrays: List[np.ndarray] = []   # BGR arrays for augmentation
+
+        # --- 1. Decode incoming images ----------------------------------
         for img_data in images:
             pose = img_data.get("pose", "unknown")
             img_bytes = img_data["bytes"]
-            
-            # Convert bytes to numpy array
+
+            logger.info(f"[DEBUG] Decoding image pose={pose}, raw bytes={len(img_bytes)}")
             pil_image = Image.open(io.BytesIO(img_bytes))
-            img_array = np.array(pil_image)
-            
-            # Keep front image for thumbnail
+            logger.info(f"[DEBUG] Decoded image: size={pil_image.size}, mode={pil_image.mode}, format={pil_image.format}")
+
+            # Keep front image for thumbnail (before any augmentation)
             if pose == "front" or front_image is None:
                 front_image = pil_image.copy()
-            
+
+            # Convert RGB → BGR for OpenCV-based augmentations
+            rgb_array = np.array(pil_image.convert("RGB"))
+            bgr_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+            raw_arrays.append(bgr_array)
+
+        logger.info(
+            f"Received {len(raw_arrays)} base image(s) for employee "
+            f"{employee_id} — augmenting to ~{len(raw_arrays) * 6} total"
+        )
+        logger.info(f"[DEBUG] Detector backend: {self.detector_backend}, Model: {self.model_name}, enforce_detection: {self.enforce_detection}")
+
+        # --- 2. Augment ------------------------------------------------
+        all_bgr = augment_batch(raw_arrays)  # originals + augmented
+
+        # --- 3. Embed each image ----------------------------------------
+        embeddings = []
+        first_error = None
+        for idx, bgr_img in enumerate(all_bgr):
+            # DeepFace expects RGB
+            rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+            logger.info(f"[DEBUG] Processing image {idx}/{len(all_bgr)}, shape={rgb_img.shape}, dtype={rgb_img.dtype}")
             try:
-                # Generate embedding
                 result = self._deepface.represent(
-                    img_path=img_array,
+                    img_path=rgb_img,
                     model_name=self.model_name,
                     detector_backend=self.detector_backend,
                     enforce_detection=self.enforce_detection,
-                    align=self.align
+                    align=self.align,
                 )
-                
                 if result and len(result) > 0:
                     embedding = result[0]["embedding"]
                     embeddings.append(embedding)
-                    logger.debug(f"Generated embedding for pose '{pose}': dim={len(embedding)}")
-                    
+                    logger.info(f"[DEBUG] Image {idx}: embedding OK, dim={len(embedding)}")
+                else:
+                    logger.warning(f"[DEBUG] Image {idx}: represent() returned empty result: {result}")
             except Exception as e:
-                logger.warning(f"Failed to process pose '{pose}': {e}")
+                if first_error is None:
+                    first_error = str(e)
+                logger.warning(f"[DEBUG] Embedding FAILED for image {idx}: {type(e).__name__}: {e}")
                 continue
-        
+
         if not embeddings:
-            raise ValueError("No faces detected in any of the provided images")
-        
-        # Average embeddings from multiple images
+            logger.error(f"[DEBUG] ALL {len(all_bgr)} images failed. First error: {first_error}")
+            raise ValueError(f"No faces detected in any of the provided images. First error: {first_error}")
+
+        logger.info(
+            f"Generated {len(embeddings)}/{len(all_bgr)} embeddings for "
+            f"employee {employee_id}"
+        )
+
+        # --- 4. Average + normalise ------------------------------------
         avg_embedding = np.mean(embeddings, axis=0).astype(np.float32)
-        
-        # Normalize embedding
         norm = np.linalg.norm(avg_embedding)
         if norm > 0:
             avg_embedding = avg_embedding / norm
-        
-        # Convert to base64
-        embedding_base64 = base64.b64encode(avg_embedding.tobytes()).decode('utf-8')
-        
-        # Generate thumbnail from front image
+
+        embedding_base64 = base64.b64encode(avg_embedding.tobytes()).decode("utf-8")
+
+        # Thumbnail from the (un-augmented) front image
         thumbnail_base64 = self._generate_thumbnail(front_image)
-        
+
         return {
             "embedding_base64": embedding_base64,
             "embedding_dim": len(avg_embedding),
             "model": self.model_name,
-            "thumbnail_base64": thumbnail_base64
+            "thumbnail_base64": thumbnail_base64,
         }
     
     def _generate_thumbnail(self, image: Image.Image, size: tuple = (128, 128)) -> str:

@@ -6,6 +6,7 @@ Uses VLM or DeepFace for emotion analysis in images/video frames.
 
 import base64
 import io
+import json
 import asyncio
 import httpx
 from typing import List, Dict, Any, Optional
@@ -76,7 +77,7 @@ class EmotionProcessor:
     
     async def _init_deepface(self):
         """Initialize DeepFace for emotion detection"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._load_deepface)
     
     def _load_deepface(self):
@@ -175,7 +176,6 @@ class EmotionProcessor:
                     content = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
                     
                     # Parse JSON from response
-                    import json
                     try:
                         emotion_data = json.loads(content)
                         emotions.append({
@@ -215,7 +215,7 @@ class EmotionProcessor:
         options: Optional[dict] = None
     ) -> Dict[str, Any]:
         """Process using DeepFace emotion detection"""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, 
             self._process_deepface_sync, 
