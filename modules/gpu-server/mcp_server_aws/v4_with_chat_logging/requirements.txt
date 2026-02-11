@@ -1,0 +1,17 @@
+# Core dependencies
+fastapi==0.120.0
+uvicorn[standard]==0.38.0
+pydantic==2.12.3
+pydantic-settings==2.11.0
+loguru==0.7.3
+requests
+dotenv==0.9.9
+pymongo>=4.15.1
+
+# MCP Client
+mcp==1.19.0
+httpx==0.28.1
+httpx-sse==0.4.3
+
+# OpenAI Client  
+openai==2.6.1

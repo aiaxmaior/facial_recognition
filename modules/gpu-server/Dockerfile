@@ -1,19 +1,26 @@
 # GPU Server Dockerfile
-# Facial Embedding & Emotion Analysis Service
+# Facial Embedding (DeepFace/ArcFace) + Emotion Analysis (vLLM)
+# Single container running both FastAPI app and vLLM server
 
-# Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+# Use NVIDIA CUDA devel image (needed for flash-attn compilation)
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
 
-# Set environment variables
+# Accept build arguments from docker compose / build script
+ARG MAX_JOBS=6
+ARG MAKEFLAGS="-j6"
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
+ENV MAX_JOBS=${MAX_JOBS}
+ENV MAKEFLAGS=${MAKEFLAGS}
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3.11 \
+    python3.10 \
+    python3.10-dev \
+    python3.10-venv \
     python3-pip \
-    python3.11-venv \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
@@ -22,46 +29,117 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     wget \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
-RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+
+# Upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# ============================================
+# Install PyTorch + CUDA 12.8
+# ============================================
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# ============================================
+# Install vLLM + flash-attention
+# ============================================
+RUN pip install --no-cache-dir vllm
+
+# Limit flash-attn compilation: 6 CPU cores, no GPU access during build
+# This lets you keep using your GPU for other work while Docker builds
+ENV MAX_JOBS=6
+ENV CUDA_VISIBLE_DEVICES=""
+
+# Verify environment variables are set
+RUN echo "========================================" && \
+    echo "flash-attn build configuration:" && \
+    echo "MAX_JOBS=${MAX_JOBS}" && \
+    echo "CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES}'" && \
+    echo "========================================"
+
+# Flash-attention is OPTIONAL - uncomment if needed (adds 20-30 min to build)
+# Only required for very long context windows (8k+ tokens)
+# For image processing tasks, the performance difference is negligible
+# RUN pip install --no-cache-dir flash-attn --no-build-isolation
+
+# Re-enable GPU access for subsequent build steps
+ENV CUDA_VISIBLE_DEVICES=0
+RUN echo "GPU re-enabled: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+
+# ============================================
+# Install DeepFace + TensorFlow
+# ============================================
+RUN pip install --no-cache-dir \
+    "tensorflow[and-cuda]>=2.15.0" \
+    deepface>=0.0.79 \
+    opencv-python-headless>=4.9.0 \
+    ultralytics>=8.0.0
+
+# ============================================
+# Install application dependencies
+# ============================================
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ============================================
+# Runtime stage (smaller final image)
+# ============================================
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install runtime system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-venv \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+
+# Copy Python packages from builder
+COPY --from=builder /usr/lib/python3/dist-packages /usr/lib/python3/dist-packages
+COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Create app directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Install TensorFlow with CUDA support (for DeepFace)
-RUN pip install --no-cache-dir tensorflow[and-cuda]>=2.15.0
-
-# Install additional face detection backends
-RUN pip install --no-cache-dir \
-    opencv-python-headless>=4.9.0 \
-    ultralytics>=8.0.0
-
 # Copy application code
 COPY app/ ./app/
 COPY config.yaml .
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
-# Create directory for models (mount as volume in production)
+# Create directories for models (mounted as volumes)
 RUN mkdir -p /models
 
-# Set config path
+# Environment
 ENV CONFIG_PATH=/app/config.yaml
+ENV VLLM_MODEL_PATH=/models/Qwen3-VL-8B-Thinking
 
-# Expose port
+# Expose ports: 5000 (FastAPI), 8000 (vLLM internal)
 EXPOSE 5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Health check against FastAPI
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]
+# Start both vLLM and FastAPI via entrypoint
+ENTRYPOINT ["./entrypoint.sh"]

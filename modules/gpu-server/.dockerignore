@@ -1,0 +1,84 @@
+# ============================================
+# GPU Server - Docker Build Context Exclusions
+# ============================================
+
+# Security - NEVER include in Docker images
+AWS_RSA_KEY/
+*.pem
+*.ppk
+*.key
+.env
+.env.*
+*.secret
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed in container)
+README.md
+*.md
+docs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.test
+test_*.py
+tests/
+
+# Logs (will be generated fresh in container)
+*.log
+logs/
+
+# Model weights (mounted as volumes, don't copy)
+models/
+*.pt
+*.pth
+*.onnx
+*.h5
+.deepface/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Docker files (don't need docker-in-docker)
+docker-compose*.yaml
+Dockerfile*
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+Jenkinsfile

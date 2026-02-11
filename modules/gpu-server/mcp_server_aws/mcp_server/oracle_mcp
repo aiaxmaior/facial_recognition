@@ -1,0 +1,195 @@
+import os
+from typing import Any
+
+import oracledb
+from config import Settings
+from fastapi.responses import JSONResponse
+from fastmcp import FastMCP
+from fetch_config import fetch_wfm_uri
+from httpx import AsyncClient
+from loguru import logger
+from pymongo import AsyncMongoClient
+from starlette.requests import Request
+
+mcp = FastMCP("oracle_mcp")
+
+
+@mcp.tool()
+async def oracle_query(query: str) -> Any:
+    """Call this tool when user asks anything related to ITMS Client.
+    Input should be in Oracle SQL format.
+    Execute a SELECT query on Oracle database and return results.
+
+    This tool allows you to query Oracle database tables. Only SELECT statements are allowed.
+    Use bind parameters for safe query execution.
+
+    Table Details: ITMS_CLIENT
+    - client_id (Id of Client)
+
+    Args:
+        query (str): The SELECT SQL query to execute (e.g., "SELECT * FROM employees WHERE dept_id = :1")
+
+    Returns:
+        Dict[str, Any]: A dictionary containing:
+            - columns: List of column names
+            - rows: List of rows (each row is a list of values)
+            - row_count: Number of rows returned
+            - error: Error message if query failed
+            - error_code: Standardized error code for programmatic handling"""
+    connection = None
+    try:
+        query_upper = query.strip().upper()
+
+        if not query_upper.startswith("SELECT"):
+            return {
+                "error": "Only SELECT statements are allowed",
+                "error_code": "INVALID_QUERY",
+            }
+            logger.info("SQL query is not a SELECT statement")
+
+        # Need to add variable names here to get dynmic dbs here for multi tenant kind or multi table kind
+
+        host = "192.168.85.177"
+        user = "DTC"
+        database = "DTC"
+        Password = "DTC"
+        service_name = "dtc"
+        port = 1521
+
+        connection = oracledb.connect(
+            user=user,
+            password=Password,
+            dsn=f"{host}:{port}/{service_name}",
+        )
+
+        cursor = connection.cursor()
+
+        cursor.execute(query)
+
+        columns = [column[0] for column in cursor.description]
+        rows = cursor.fetchall()
+
+        row_list = [list(row) for row in rows]
+
+        cursor.close()
+
+        return {
+            "columns": columns,
+            "rows": row_list,
+            "row_count": len(row_list),
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "error_code": "DATABASE_ERROR",
+        }
+    finally:
+        if connection:
+            connection.close()
+            logger.info("Oracle connection closed")
+
+
+@mcp.tool()
+async def ada_eligibility(client_name: str) -> Any:
+    """Call this tool when user asks anything related to ITMS Client's ADA Eligibilty. ADA Eligibility will be checked based on the name of the client.
+
+    Args:
+        client_name (str): name of the client for which ADA Eligibility is to be checked
+
+    Returns:
+        response (str): Response containing the ADA Eligibility details for the given client name with cols CLIENTID and ELIGIBILITY
+    """
+    connection = None
+    try:
+        host = "192.168.85.177"
+        user = "DTC"
+        database = "DTC"
+        Password = "DTC"
+        service_name = "dtc"
+        port = 1521
+
+        connection = oracledb.connect(
+            user=user,
+            password=Password,
+            dsn=f"{host}:{port}/{service_name}",
+        )
+        response = {}
+        cursor = connection.cursor()
+
+        # tool based on client id
+        # for table in ["ITMS_CLIENT", "ITMS_ELIG", "ITMS_ADA_CERTIFICATION"]:
+        #     cursor.execute(f"SELECT * FROM {table} WHERE CLIENTID = :1", (client_id,))
+        #     columns = [column[0] for column in cursor.description]
+        #     rows = cursor.fetchall()
+        #     row_list = [list(row) for row in rows]
+        #     response[table] = {
+        #         "columns": columns,
+        #         "rows": row_list,
+        #         "row_count": len(row_list),
+        #     }
+
+        # cursor.execute("SELECT * FROM ITMS_ELIG WHERE CLIENTID = :1", (client_id,))
+
+        # tool based on client name
+        if client_name:
+            lastname = (
+                client_name.split(" ")[-1] if len(client_name.split(" ")) > 1 else None
+            )
+            firstname = client_name.split(" ")[0]
+            middlename = (
+                " ".join(client_name.split(" ")[1:-1])
+                if len(client_name.split(" ")) > 2
+                else None
+            )
+        else:
+            return "No client name provided"
+
+        query = """
+        SELECT 
+            e.CLIENTID,
+            c.NAME AS LASTNAME,
+            c.NAME2 AS FIRSTNAME,
+            c.NAME3 AS MIDDLENAME,
+            e.START_DATE,
+            e.END_DATE,
+            CASE 
+                WHEN TRUNC(SYSDATE) BETWEEN TRUNC(e.START_DATE) AND TRUNC(e.END_DATE) 
+                THEN 'ELIGIBLE'
+                ELSE 'NOT ELIGIBLE'
+            END AS ADA_ELIGIBILITY
+        FROM ITMS_ELIG e
+        INNER JOIN ITMS_CLIENT c ON e.CLIENTID = c.CLIENTID
+        WHERE (UPPER(c.NAME) = UPPER(:lastname) OR (:lastname IS NULL AND c.NAME IS NULL) OR :lastname IS NULL)
+          AND (UPPER(c.NAME2) = UPPER(:firstname) OR (:firstname IS NULL AND c.NAME2 IS NULL) OR :firstname IS NULL)
+          AND (UPPER(c.NAME3) = UPPER(:middlename) OR (:middlename IS NULL AND c.NAME3 IS NULL) OR :middlename IS NULL)
+        """
+
+        cursor.execute(
+            query,
+            {"lastname": lastname, "firstname": firstname, "middlename": middlename},
+        )
+        columns = [column[0] for column in cursor.description]
+        rows = cursor.fetchall()
+        row_list = [list(row) for row in rows]
+        if len(row_list) == 0:
+            return f"No client found for "
+        response["ITMS_ELIG"] = {
+            "columns": columns,
+            "rows": row_list,
+            "row_count": len(row_list),
+        }
+
+        cursor.close()
+
+        return response
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "error_code": "DATABASE_ERROR",
+        }
+    finally:
+        if connection:
+            connection.close()
+            logger.info("Oracle connection closed")

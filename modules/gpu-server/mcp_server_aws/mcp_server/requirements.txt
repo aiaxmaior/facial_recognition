@@ -1,0 +1,13 @@
+# Core dependencies
+fastmcp>=2.12.3
+fastapi>=0.115.6
+loguru>=0.7.3
+pydantic-settings>=2.10.1
+
+# Database clients
+pymongo>=4.15.1
+oracledb>=2.0.0
+
+# HTTP client
+httpx>=0.28.0
+

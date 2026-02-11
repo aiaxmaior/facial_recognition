@@ -104,6 +104,14 @@ temp/
 *.tmp
 
 
+# =============================================================================
+# Secrets / SSH Keys
+# =============================================================================
+*.ppk
+*.pem
+AWS_RSA_KEY/
+**/AWS_RSA_KEY/
+
 # Exclude diffusion model specific documentation
 PIPELINE_README.md
 video_analysis/PIPELINE_README.md
@@ -111,3 +119,25 @@ video_analysis/PIPELINE_README.md
 # Backup files
 *.bak
 **/*.bak
+
+# =============================================================================
+# Data augmentation & experiment artifacts
+# =============================================================================
+augmented_dataset/
+image_augmentation/
+modules/enrolled_user_augment/
+
+# Edge device artifacts
+modules/edge-device/enrolled_users/
+modules/edge-device/saved_user_images/
+modules/edge-device/scripts/augment_enrollments.py
+modules/edge-device/scripts/calculate_face_size.py
+modules/edge-device/scripts/enroll_from_naming_schema.py
+
+# Dev / experimental modules
+modules/edge-device_dev/
+
+# Utility scripts & snapshots
+remote_file_reader.py
+ssh_helper.py
+snapshot_main.jpg

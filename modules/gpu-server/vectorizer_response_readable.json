@@ -1,0 +1,9 @@
+{
+  "employee_id": "arjun_joshi",
+  "enrollmentProcessedFile": "<base64 Float32 array, 512 dims, ~2732 chars>",
+  "embedding_dim": 512,
+  "model": "ArcFace",
+  "enrollmentPictureThumbnail": "<base64 JPEG 128x128 thumbnail>",
+  "image_count": 5,
+  "processing_time_ms": 10351
+}

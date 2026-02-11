@@ -132,7 +132,7 @@ models:
     name: ArcFace
     backend: tensorrt  # or onnx
   vlm:
-    name: llava-1.5-7b
+    name: Qwen/Qwen3-VL-8B-Thinking
     backend: vllm
 
 gpu:
