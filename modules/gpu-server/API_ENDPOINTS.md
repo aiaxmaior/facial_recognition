@@ -1,10 +1,11 @@
 # GPU Server API Endpoints
 
-## Gateway-Ready Endpoints (3 Functions)
+Public API uses the base path **`/iot/(endpoint)`** only (no `/v1`). vLLM runs internally in Docker.
+
+## IoT Endpoints (3 Functions)
 
 ### 1. Facial Recognition (Embedding Generation)
-**Primary:** `POST /v1/facial_recognition`
-**Legacy:** `POST /vectorizer/generate`, `POST /v1/vectorizer`
+**Endpoint:** `POST /iot/vectorizer`
 
 **Purpose:** Generate facial embeddings from enrollment images
 **Called by:** Enrollment Modal (via Bridge Server)
@@ -39,9 +40,8 @@
 
 ---
 
-### 2. VLM (Emotion Analysis)
-**Primary:** `POST /v1/vlm`
-**Legacy:** `POST /vlm/analyze`
+### 2. Emotions (VLM – runs internally)
+**Endpoint:** `POST /iot/emotions`
 
 **Purpose:** Analyze emotions in images using Vision Language Model
 **Called by:** Edge Devices (Jetson)
@@ -82,7 +82,7 @@
 ---
 
 ### 3. Transcription (Placeholder - TBD)
-**Primary:** `POST /v1/transcription`
+**Endpoint:** `POST /iot/transcription`
 
 **Purpose:** Audio transcription (future implementation)
 **Called by:** TBD (additional user's code)
@@ -176,11 +176,12 @@ When deployed behind gateway with `ROOT_PATH=/galaxy/gpu`:
 
 | Function | Endpoint | Full URL |
 |----------|----------|----------|
-| Facial Recognition | `/v1/facial_recognition` | `https://gateway.com/galaxy/gpu/v1/facial_recognition` |
-| VLM | `/v1/vlm` | `https://gateway.com/galaxy/gpu/v1/vlm` |
-| Transcription | `/v1/transcription` | `https://gateway.com/galaxy/gpu/v1/transcription` |
-| Health | `/health` | `https://gateway.com/galaxy/gpu/health` |
-| Logs UI | `/logs/view` | `https://gateway.com/galaxy/gpu/logs/view` |
+| Facial Recognition | `/iot/vectorizer` | `https://gateway.com/galaxy/gpu/iot/vectorizer` |
+| Emotions (VLM) | `/iot/emotions` | `https://gateway.com/galaxy/gpu/iot/emotions` |
+| Transcription | `/iot/transcription` | `https://gateway.com/galaxy/gpu/iot/transcription` |
+| Health (simple) | `/iot/health` | `https://gateway.com/galaxy/gpu/iot/health` |
+| Models (detail) | `/iot/models` | `https://gateway.com/galaxy/gpu/iot/models` |
+| Logs UI | `/iot/logs/view` | `https://gateway.com/galaxy/gpu/iot/logs/view` |
 
 ---
 
@@ -232,7 +233,7 @@ allow_origins=[
 
 ## Summary
 
-**Active Endpoints:** 3 functions + system endpoints
-**Legacy Support:** Old endpoint names still work
+**Active Endpoints:** 3 functions under `/iot/` + health/logs
+**API base:** `/iot/(endpoint)` only (no `/v1`)
 **Gateway Ready:** ROOT_PATH configurable
 **Future:** Transcription endpoint placeholder ready

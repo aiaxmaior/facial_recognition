@@ -18,9 +18,9 @@ No request body. Response is JSON.
 ## Facial enrollment (vectorizer)
 
 **Endpoints:**  
-`POST /v1/facial_recognition` · `POST /vectorizer/generate` · `POST /v1/vectorizer`
+`POST /iot/vectorizer`
 
-All three use the same handler and payload. For enrollment integration, **`/vectorizer/generate`** (and `/v1/vectorizer`) remain in use; keep these routes as long as callers depend on them.
+Single endpoint under the IoT base path (no `/v1`).
 
 **Purpose:** Turn 1–5 face photos into a single embedding + thumbnail for enrollment.
 
@@ -41,7 +41,7 @@ All three use the same handler and payload. For enrollment integration, **`/vect
 ## Emotion analysis (VLM)
 
 **Endpoints:**  
-`POST /v1/vlm` · `POST /vlm/analyze`
+`POST /iot/emotions`
 
 **Purpose:** Analyze emotions in a set of image frames (e.g. from a short clip).
 
@@ -57,7 +57,7 @@ All three use the same handler and payload. For enrollment integration, **`/vect
 
 ## Transcription
 
-**Endpoint:** `POST /v1/transcription`
+**Endpoint:** `POST /iot/transcription`
 
 **Status:** Placeholder only. Returns “not implemented.” Reserved for future audio transcription.
 

@@ -1,11 +1,14 @@
 """
 GPU Server - Facial Embedding & Emotion Analysis Service
 
-Single Docker container serving multiple GPU-accelerated functions:
-1. POST /vectorizer/generate - Generate face embeddings using DeepFace/ArcFace
-2. POST /vlm/analyze - Analyze emotions using VLM (Qwen3-VL via vLLM)
+Single Docker container serving multiple GPU-accelerated functions.
+Public API uses the base path /iot/(endpoint) only (no /v1).
+vLLM and other application backends run internally inside Docker.
 
-Each function has its own dedicated endpoint for direct use by deployed devices.
+1. POST /iot/vectorizer - Generate face embeddings (DeepFace/ArcFace)
+2. POST /iot/emotions - Analyze emotions (VLM, internally via vLLM)
+
+Endpoints defined in api_routes.yaml (base /iot). Health: GET /iot/health, GET /iot/models.
 """
 
 import os
@@ -18,15 +21,14 @@ from typing import Optional, List
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
 
 from app.processors.embedding import EmbeddingProcessor
 from app.processors.emotion import EmotionProcessor
-from app.utils.logging import LogHandler, get_log_viewer_html
+from app.utils.logging import LogHandler
 
 
 # ============================================
@@ -50,6 +52,29 @@ def load_config():
 
 
 config = load_config()
+
+
+def load_routes():
+    """Load API route paths from api_routes.yaml (or defaults if missing)."""
+    routes_path = os.environ.get("ROUTES_CONFIG_PATH", "api_routes.yaml")
+    if os.path.exists(routes_path):
+        with open(routes_path, "r") as f:
+            raw = yaml.safe_load(f)
+    else:
+        # Sensible defaults if file is missing
+        raw = {
+            "base": "/iot",
+            "endpoints": {
+                "health": "/health", "models": "/models",
+                "vectorizer": "/vectorizer", "emotions": "/emotions",
+                "transcription": "/transcription",
+            }
+        }
+    base = raw.get("base", "/iot")
+    return {k: f"{base}{v}" for k, v in raw.get("endpoints", {}).items()}
+
+
+routes = load_routes()
 
 # In-memory log storage
 log_storage = deque(maxlen=config.get("logging", {}).get("max_log_entries", 1000))
@@ -78,14 +103,14 @@ class VectorizerImageInput(BaseModel):
 
 
 class VectorizerRequest(BaseModel):
-    """Request for POST /vectorizer/generate"""
+    """Request for POST /iot/vectorizer"""
     employee_id: str = Field(..., description="Employee/Person identifier")
     images: List[VectorizerImageInput] = Field(..., description="List of pose images to process")
     options: Optional[dict] = Field(default=None, description="Processing options")
 
 
 class VectorizerResponse(BaseModel):
-    """Response from POST /vectorizer/generate"""
+    """Response from POST /iot/vectorizer"""
     employee_id: str
     enrollmentProcessedFile: str  # Base64 Float32Array
     embedding_dim: int
@@ -93,6 +118,7 @@ class VectorizerResponse(BaseModel):
     enrollmentPictureThumbnail: str  # Base64 JPEG 128x128
     image_count: int
     processing_time_ms: int
+    mock: bool = Field(default=False, description="True if response is from mock (no real DeepFace/embedding model)")
 
 
 # ============================================
@@ -106,7 +132,7 @@ class VLMImageInput(BaseModel):
 
 
 class VLMRequest(BaseModel):
-    """Request for POST /vlm/analyze"""
+    """Request for POST /iot/emotions"""
     event_id: Optional[str] = Field(default=None, description="Event identifier")
     employee_id: Optional[str] = Field(default=None, description="Employee identifier")
     images: List[VLMImageInput] = Field(..., description="Image frames to analyze")
@@ -115,13 +141,14 @@ class VLMRequest(BaseModel):
 
 
 class VLMResponse(BaseModel):
-    """Response from POST /vlm/analyze"""
+    """Response from POST /iot/emotions"""
     event_id: Optional[str] = None
     employee_id: Optional[str] = None
     emotions: List[dict]
     dominant_emotion: str
     analysis_summary: Optional[str] = None
     processing_time_ms: int
+    mock: bool = Field(default=False, description="True if response is from mock backend (no real model)")
 
 
 # ============================================
@@ -160,6 +187,7 @@ async def lifespan(app: FastAPI):
         await emotion_processor.initialize()
         logger.info(f"Emotion processor initialized: {emotion_config.get('backend', 'mock')}")
 
+        logger.info(f"API routes loaded: {routes}")
         logger.info("GPU Server startup completed")
         yield
 
@@ -182,8 +210,8 @@ async def lifespan(app: FastAPI):
 logger.info("Creating FastAPI application")
 
 # Gateway integration - set root_path from environment
-# Gateway will route to this service at /api/v1/gpu or similar
-ROOT_PATH = os.environ.get("ROOT_PATH", "")  # e.g., "/api/v1/gpu" or "/galaxy/slmapi"
+# Incoming payloads are directed at /iot/(endpoint); gateway may add a prefix via ROOT_PATH.
+ROOT_PATH = os.environ.get("ROOT_PATH", "")  # e.g., "" or "/galaxy/gpu"
 
 app = FastAPI(
     title="GPU Processing Server",
@@ -204,20 +232,20 @@ app.add_middleware(
 
 
 # ============================================
-# Health Endpoints
+# Health Endpoints (under /iot/)
 # ============================================
 
-@app.get("/health")
+@app.get(routes["health"])
 async def health():
-    """Simple health check"""
+    """Simple health check - IoT API base path"""
     return {"status": "ok"}
 
 
 @app.get("/", response_model=HealthResponse)
+@app.get(routes["models"], response_model=HealthResponse)
 async def health_detail():
     """Detailed health check with model and GPU status"""
     logger.debug("Health check called")
-
     return HealthResponse(
         status="ok",
         timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -236,17 +264,15 @@ async def health_detail():
 
 
 # ============================================
-# Facial Recognition Endpoint (renamed from vectorizer per boss request)
+# Facial Recognition (vectorizer) - /iot/vectorizer
 # ============================================
 
-@app.post("/v1/facial_recognition", response_model=VectorizerResponse)
-@app.post("/vectorizer/generate", response_model=VectorizerResponse)  # Legacy compatibility
-@app.post("/v1/vectorizer", response_model=VectorizerResponse)  # Legacy compatibility
+@app.post(routes["vectorizer"], response_model=VectorizerResponse)
 async def facial_recognition_generate(request: VectorizerRequest):
     """
     Generate facial embedding from enrollment images.
 
-    Called by: Enrollment Modal (via Bridge Server)
+    Called by: Enrollment Modal (via Bridge Server). IoT base path: /iot/vectorizer.
     Input: 1-5 pose images (front, left, right, up, down)
     Output: 512-dim ArcFace embedding + 128x128 thumbnail
     """
@@ -297,6 +323,7 @@ async def facial_recognition_generate(request: VectorizerRequest):
             enrollmentPictureThumbnail=result["thumbnail_base64"],
             image_count=len(request.images),
             processing_time_ms=processing_time,
+            mock="(mock)" in result.get("model", ""),
         )
 
     except HTTPException:
@@ -307,16 +334,15 @@ async def facial_recognition_generate(request: VectorizerRequest):
 
 
 # ============================================
-# VLM Endpoint
+# Emotions (VLM) - /iot/emotions (vLLM runs internally in Docker)
 # ============================================
 
-@app.post("/v1/vlm", response_model=VLMResponse)
-@app.post("/vlm/analyze", response_model=VLMResponse)  # Legacy compatibility
+@app.post(routes["emotions"], response_model=VLMResponse)
 async def vlm_analyze(request: VLMRequest):
     """
-    Analyze emotions in images using Vision Language Model.
+    Analyze emotions in images using Vision Language Model (vLLM internal).
 
-    Called by: Edge Devices (Jetson)
+    Called by: Edge Devices (Jetson). IoT base path: /iot/emotions.
     Input: Image frames from video clip
     Output: Per-frame emotions, dominant emotion, narrative summary
 
@@ -369,6 +395,7 @@ async def vlm_analyze(request: VLMRequest):
             dominant_emotion=result["dominant_emotion"],
             analysis_summary=result.get("summary"),
             processing_time_ms=processing_time,
+            mock=(emotion_processor.backend == "mock"),
         )
 
     except HTTPException:
@@ -379,10 +406,10 @@ async def vlm_analyze(request: VLMRequest):
 
 
 # ============================================
-# Transcription Endpoint (Placeholder - TBD)
+# Transcription (Placeholder - TBD) - /iot/transcription
 # ============================================
 
-@app.post("/v1/transcription")
+@app.post(routes["transcription"])
 async def transcription_process(request: dict):
     """
     Audio transcription endpoint.
@@ -399,43 +426,6 @@ async def transcription_process(request: dict):
         "message": "Transcription functionality is not yet implemented",
         "note": "This endpoint is reserved for future audio transcription features"
     }
-
-
-# ============================================
-# Logging Endpoints
-# ============================================
-
-@app.get("/logs")
-async def get_logs(limit: int = 100):
-    """API endpoint to retrieve logs"""
-    logger.debug(f"Logs endpoint called with limit={limit}")
-    logs = list(log_storage)
-    return {"logs": logs[-limit:], "total": len(logs)}
-
-
-@app.get("/logs/view", response_class=HTMLResponse)
-async def view_logs():
-    """Web UI to view logs in real-time"""
-    return HTMLResponse(content=get_log_viewer_html())
-
-
-@app.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket):
-    """WebSocket endpoint for real-time log streaming"""
-    await websocket.accept()
-    websocket_connections.append(websocket)
-    logger.info(f"WebSocket client connected. Total connections: {len(websocket_connections)}")
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        logger.debug("WebSocket client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-    finally:
-        if websocket in websocket_connections:
-            websocket_connections.remove(websocket)
 
 
 # ============================================

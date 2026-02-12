@@ -1,27 +1,20 @@
 # GPU Server – API Endpoints & Payloads
 
+Public API uses the base path **`/iot/(endpoint)`** only (no `/v1`). vLLM and other backends run internally in Docker.
+
 ## Health
 
-### GET `/`
-**Response:** `HealthResponse`
-```json
-{
-  "status": "string",
-  "timestamp": "string",
-  "models": {},
-  "gpu_available": true
-}
-```
+### GET `/` or GET `/iot/models`
+**Response:** `HealthResponse` (detailed, with model/GPU status)
 
-### GET `/health`
+### GET `/iot/health`
 **Response:** `{"status": "ok"}`
 
 ---
 
 ## Facial embedding (vectorizer)
 
-**Endpoints:**  
-`POST /v1/facial_recognition` · `POST /vectorizer/generate` · `POST /v1/vectorizer`
+**Endpoint:** `POST /iot/vectorizer`
 
 **Request:** `VectorizerRequest`
 ```json
@@ -52,10 +45,9 @@
 
 ---
 
-## VLM emotion analysis
+## VLM emotion analysis (emotions)
 
-**Endpoints:**  
-`POST /v1/vlm` · `POST /vlm/analyze`
+**Endpoint:** `POST /iot/emotions`
 
 **Request:** `VLMRequest`
 ```json
@@ -91,7 +83,7 @@ The VLM pipeline will be extended to accept an **.mp4 file** (or equivalent) con
 
 ## Transcription (placeholder)
 
-**Endpoint:** `POST /v1/transcription`
+**Endpoint:** `POST /iot/transcription`
 
 **Request:** `{}` (body accepted as `dict`, format TBD)
 
@@ -108,7 +100,7 @@ The VLM pipeline will be extended to accept an **.mp4 file** (or equivalent) con
 
 ## Logs
 
-### GET `/logs`
+### GET `/iot/logs`
 **Query:** `limit` (optional, default 100)
 
 **Response:**
@@ -119,5 +111,5 @@ The VLM pipeline will be extended to accept an **.mp4 file** (or equivalent) con
 }
 ```
 
-### GET `/logs/view`
+### GET `/iot/logs/view`
 **Response:** HTML (log viewer UI)

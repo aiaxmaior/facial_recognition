@@ -18,7 +18,7 @@ No request body. Response is JSON.
 ## Facial enrollment (vectorizer)
 
 **Endpoints:**  
-`POST /v1/facial_recognition` · `POST /vectorizer/generate` · `POST /v1/vectorizer`
+`POST /iot/vectorizer`
 
 **Purpose:** Turn 1–5 face photos into a single embedding + thumbnail for enrollment.
 
@@ -39,7 +39,7 @@ No request body. Response is JSON.
 ## Emotion analysis (VLM)
 
 **Endpoints:**  
-`POST /v1/vlm` · `POST /vlm/analyze`
+`POST /iot/emotions`
 
 **Purpose:** Analyze emotions in a set of image frames (e.g. from a short clip).
 
@@ -55,7 +55,7 @@ No request body. Response is JSON.
 
 ## Transcription
 
-**Endpoint:** `POST /v1/transcription`
+**Endpoint:** `POST /iot/transcription`
 
 **Status:** Placeholder only. Returns “not implemented.” Reserved for future audio transcription.
 
