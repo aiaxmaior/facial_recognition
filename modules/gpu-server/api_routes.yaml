@@ -1,0 +1,15 @@
+# API Route Configuration
+# All endpoint paths are relative to base.
+# base is prepended to every endpoint path at startup.
+
+base: /iot
+
+endpoints:
+  # Health / status
+  health: /health           # GET - simple {"status": "ok"}
+  models: /models           # GET - detailed model + GPU status
+
+  # Core functions
+  vectorizer: /vectorizer   # POST - facial embedding generation
+  emotions: /emotions       # POST - VLM emotion analysis
+  transcription: /transcription  # POST - audio transcription (placeholder)

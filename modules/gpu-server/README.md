@@ -15,8 +15,8 @@ Centralized GPU processing server for facial embedding generation and VLM-based 
 │  │  │   Vectorizer        │    │   VLM (vLLM)            │ │  │
 │  │  │   (ArcFace)         │    │   (Emotion Analysis)    │ │  │
 │  │  │                     │    │                         │ │  │
-│  │  │  POST /api/         │    │  POST /api/             │ │  │
-│  │  │  vectorizer/generate│    │  vlm/analyze            │ │  │
+│  │  │  POST /iot/         │    │  POST /iot/              │ │  │
+│  │  │  vectorizer         │    │  emotions                │ │  │
 │  │  └─────────────────────┘    └─────────────────────────┘ │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────┘
@@ -28,13 +28,13 @@ Centralized GPU processing server for facial embedding generation and VLM-based 
         └───────────────────────┘   └─────────────────┘
 ```
 
-## API Endpoints
+## API Endpoints (base path `/iot/`)
 
 | Endpoint | Method | Caller | Description |
 |----------|--------|--------|-------------|
-| `/api/vectorizer/generate` | POST | Enrollment Modal | Generate facial embedding |
-| `/api/vlm/analyze` | POST | Edge Device | Emotion analysis from video |
-| `/api/health` | GET | Any | Health check |
+| `/iot/vectorizer` | POST | Enrollment Modal | Generate facial embedding |
+| `/iot/emotions` | POST | Edge Device | Emotion analysis (VLM internal) |
+| `/iot/health` | GET | Any | Health check |
 
 ## Components
 
