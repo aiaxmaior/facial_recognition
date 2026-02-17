@@ -380,19 +380,35 @@ class TRTFaceDetector:
         elapsed_ms = (time.perf_counter() - start) * 1000
         return detections, elapsed_ms
     
-    def __del__(self):
-        """Cleanup GPU resources."""
+    @property
+    def is_ready(self) -> bool:
+        """True if the TensorRT engine is loaded and GPU memory is allocated."""
+        return (
+            hasattr(self, 'engine') and self.engine is not None
+            and hasattr(self, 'd_input') and self.d_input is not None
+        )
+    
+    def cleanup(self) -> None:
+        """Explicitly release GPU resources. Safe to call multiple times."""
         try:
-            if hasattr(self, 'cuda_ctx'):
+            if hasattr(self, 'cuda_ctx') and self.cuda_ctx is not None:
                 self.cuda_ctx.push()
-                if hasattr(self, 'd_input'):
+                if hasattr(self, 'd_input') and self.d_input is not None:
                     self.d_input.free()
-                if hasattr(self, 'd_output'):
+                    self.d_input = None
+                if hasattr(self, 'd_output') and self.d_output is not None:
                     self.d_output.free()
+                    self.d_output = None
                 self.cuda_ctx.pop()
                 self.cuda_ctx.detach()
-        except:
-            pass
+                self.cuda_ctx = None
+                logger.info("TRT Face Detector GPU resources released")
+        except Exception as e:
+            logger.warning(f"Error during TRT cleanup: {e}")
+    
+    def __del__(self):
+        """Cleanup GPU resources on garbage collection."""
+        self.cleanup()
 
 
 # Test

@@ -22,7 +22,7 @@ Routing is determined by `header.command_id`.
 ## 1. Socket.IO Connection
 
 **Server:** `https://acetaxi-bridge.qryde.net`
-**Path:** `/iot-broker/socket.io` (default Socket.IO path behind reverse proxy)
+**Path:** `/iot-broker/api/socket.io` (Socket.IO path behind reverse proxy)
 **Namespace:** `/` (default)
 
 The `python-socketio` client handles:
@@ -70,6 +70,7 @@ sio.emit('message', [{"header": {...}}, {"data": {...}}])
 | command_id | Direction | Purpose |
 |---|---|---|
 | `device.register` | Edge -> Broker | Register device on connect |
+| `device.heartbeat` | Edge -> Broker | Heartbeat over Socket.IO (broker then updates data-service) |
 | `response.success` | Broker -> Edge | Confirm registration |
 | `enrollment.publish` | Broker -> Edge | Push a face embedding |
 | `event.log` | Edge -> Broker | Send recognition/emotion event |
@@ -274,7 +275,7 @@ Sent every 30 seconds.
   "sync": {
     "enrollment_db_path": "data/enrollments.db",
     "socketio_url": "https://acetaxi-bridge.qryde.net",
-    "socketio_path": "/iot-broker/socket.io"
+    "socketio_path": "/iot-broker/api/socket.io"
   },
   "heartbeat": {
     "interval_seconds": 30

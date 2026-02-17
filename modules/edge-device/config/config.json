@@ -18,6 +18,7 @@
         "fallback_mode": "opencv"
     },
     "detection": {
+        "use_tensorrt": true,
         "engine_path": "models/yolov8_face/yolov8n-face.engine",
         "input_size": 640,
         "conf_threshold": 0.5,
@@ -48,7 +49,7 @@
     "sync": {
         "enrollment_db_path": "data/enrollments.db",
         "socketio_url": "https://acetaxi-bridge.qryde.net",
-        "socketio_path": "/iot-broker/socket.io"
+        "socketio_path": "/iot-broker/api/socket.io"
     },
     "heartbeat": {
         "interval_seconds": 30

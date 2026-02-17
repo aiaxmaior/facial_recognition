@@ -56,16 +56,18 @@ class FaceRecognitionPipeline:
     """
     Face detection and recognition pipeline.
     
-    Uses DeepFace with ArcFace model for recognition.
-    # Original implementation does not use TensorRT. Need to wire in trt_face_detector module.
+    Uses TensorRT YOLOv8-face for detection (when available) and
+    DeepFace ArcFace for recognition (with detector_backend="skip").
+    Falls back to DeepFace detection if TensorRT is not available.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], detection_config: Optional[Dict[str, Any]] = None):
         """
         Initialize the face recognition pipeline.
         
         Args:
             config: Recognition configuration dict
+            detection_config: Detection configuration dict (engine_path, use_tensorrt, etc.)
         """
         self.config = config
         self.model_name = config.get("model", "ArcFace")
@@ -77,9 +79,35 @@ class FaceRecognitionPipeline:
         self._initialized = False
         self._embeddings_db: Dict[str, np.ndarray] = {}
         self._detection_count = 0  # For periodic logging
+        
+        # TensorRT face detector (conditionally initialized)
+        self._trt_detector = None
+        self._use_tensorrt = False
+        detection_config = detection_config or {}
+        
+        if detection_config.get("use_tensorrt", False):
+            engine_path = detection_config.get("engine_path", "")
+            if engine_path and os.path.exists(engine_path):
+                try:
+                    from trt_face_detector import TRTFaceDetector
+                    self._trt_detector = TRTFaceDetector(
+                        engine_path=engine_path,
+                        input_size=detection_config.get("input_size", 640),
+                        conf_threshold=detection_config.get("conf_threshold", 0.5),
+                        nms_threshold=detection_config.get("nms_threshold", 0.45),
+                    )
+                    self._use_tensorrt = True
+                    logger.info(f"TensorRT face detector initialized: {engine_path}")
+                except ImportError:
+                    logger.warning("TensorRT/pycuda not available — falling back to DeepFace detector")
+                except Exception as e:
+                    logger.error(f"Failed to initialize TensorRT detector: {e} — falling back to DeepFace")
+            else:
+                logger.warning(f"TensorRT requested but engine not found at '{engine_path}' — falling back to DeepFace")
+        
         self._effective_FRP_config = {
             "model": self.model_name,
-            "detector_backend": self.detector_backend,
+            "detector": "TensorRT" if self._use_tensorrt else f"DeepFace/{self.detector_backend}",
             "distance_threshold": self.distance_threshold,
             "min_face_size": self.min_face_size,
             "min_confidence": self.min_confidence
@@ -90,6 +118,10 @@ class FaceRecognitionPipeline:
         """
         Initialize models (lazy loading).
         
+        Loads ArcFace recognition model via DeepFace (with detector_backend="skip"
+        since detection is handled by TRTFaceDetector or DeepFace separately).
+        TRT detector is already initialized in __init__ if enabled.
+        
         Returns:
             True if successful
         """
@@ -97,11 +129,11 @@ class FaceRecognitionPipeline:
             return True
         
         try:
-            # Import DeepFace (takes time to load models)
-            logger.info("Loading face recognition models...")
+            logger.info("Loading ArcFace recognition model...")
             from deepface import DeepFace
             
-            # Warm up the model with a dummy image
+            # Warm up ArcFace model with a dummy image (detector_backend="skip"
+            # because detection is handled separately by TRT or DeepFace)
             dummy_img = np.zeros((160, 160, 3), dtype=np.uint8)
             try:
                 DeepFace.represent(
@@ -114,7 +146,8 @@ class FaceRecognitionPipeline:
                 pass  # Expected to fail with dummy image
             
             self._initialized = True
-            logger.info("Face recognition models loaded successfully")
+            detector_label = "TensorRT" if self._use_tensorrt else f"DeepFace/{self.detector_backend}"
+            logger.info(f"Recognition pipeline ready — detector: {detector_label}, recognition: {self.model_name}")
             return True
             
         except Exception as e:
@@ -135,12 +168,56 @@ class FaceRecognitionPipeline:
         """
         Detect faces in frame.
         
+        Uses TensorRT YOLOv8-face when available, otherwise falls back to DeepFace.
+        Returns DeepFace-compatible dicts regardless of backend:
+            {"facial_area": {"x": int, "y": int, "w": int, "h": int}, "confidence": float}
+        
         Args:
             frame: BGR image frame
             
         Returns:
-            List of face detections with bounding boxes
+            List of face detections with bounding boxes (DeepFace dict format)
         """
+        self._detection_count += 1
+        
+        if self._trt_detector is not None:
+            return self._detect_faces_trt(frame)
+        return self._detect_faces_deepface(frame)
+    
+    def _detect_faces_trt(self, frame: np.ndarray) -> list:
+        """Detect faces using TensorRT YOLOv8-face, return DeepFace-compatible dicts."""
+        try:
+            detections = self._trt_detector.detect(frame)
+            
+            if detections and (self._detection_count <= 10 or self._detection_count % 100 == 0):
+                for i, det in enumerate(detections):
+                    x1, y1, x2, y2 = det.bbox
+                    logger.info(f"[DETECT-TRT] Face {i}: conf={det.confidence:.3f}, bbox=({x1},{y1},{x2},{y2})")
+            
+            # Convert TRT FaceDetection → DeepFace dict format and filter
+            valid_faces = []
+            for det in detections:
+                if det.confidence < self.min_confidence:
+                    continue
+                x1, y1, x2, y2 = det.bbox
+                w = x2 - x1
+                h = y2 - y1
+                if w < self.min_face_size or h < self.min_face_size:
+                    continue
+                valid_faces.append({
+                    "facial_area": {"x": int(x1), "y": int(y1), "w": int(w), "h": int(h)},
+                    "confidence": det.confidence,
+                })
+                logger.info(f"[DETECT-TRT] Valid face: conf={det.confidence:.3f}, size={w}x{h}")
+            
+            return valid_faces
+            
+        except Exception as e:
+            logger.warning(f"TRT face detection error: {e}")
+            return []
+    
+    def _detect_faces_deepface(self, frame: np.ndarray) -> list:
+        """Detect faces using DeepFace (fallback path)."""
         try:
             from deepface import DeepFace
             
@@ -151,9 +228,6 @@ class FaceRecognitionPipeline:
                 align=True
             )
             
-            self._detection_count += 1
-            
-            # Log raw detections periodically or when faces found with confidence
             if faces:
                 has_confident = any(f.get("confidence", 0) > 0.1 for f in faces)
                 if has_confident or self._detection_count % 100 == 0:
@@ -340,6 +414,7 @@ class EdgeDevice:
         self.broker_url = self.config.get("broker_url")
         self.camera_config = self.config.get("camera", {})
         self.recognition_config = self.config.get("recognition", {})
+        self.detection_config = self.config.get("detection", {})
         self.validation_config = self.config.get("validation", {})
         self.buffer_config = self.config.get("video_buffer", {})
         self.sync_config = self.config.get("sync", {})
@@ -350,8 +425,11 @@ class EdgeDevice:
         self.rtsp_url = self.camera_config.get("rtsp_url")
         self.target_fps = self.camera_config.get("fps", 25)
         
-        # Face recognition pipeline
-        self.recognition = FaceRecognitionPipeline(self.recognition_config)
+        # Face recognition pipeline (detection config controls TensorRT vs DeepFace)
+        self.recognition = FaceRecognitionPipeline(
+            self.recognition_config,
+            detection_config=self.detection_config
+        )
         
         # Event validator
         self.confirmation_frames = self.validation_config.get("confirmation_frames", 3)
@@ -445,8 +523,9 @@ class EdgeDevice:
             "broker_url": self.broker_url,
             "rtsp_url": self.rtsp_url,
             "target_fps": self.target_fps,
-            "model": self.recognition.model_name,
-            "detector_backend": self.recognition.detector_backend,
+            "detection_backend": "TensorRT" if self.recognition._use_tensorrt else f"DeepFace/{self.recognition.detector_backend}",
+            "detection_engine": self.detection_config.get("engine_path", "N/A") if self.recognition._use_tensorrt else "N/A",
+            "recognition_model": self.recognition.model_name,
             "distance_threshold": self.distance_threshold,
             "min_face_size": self.recognition.min_face_size,
             "min_confidence": self.recognition.min_confidence,
