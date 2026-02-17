@@ -130,6 +130,10 @@ modules/enrolled_user_augment/
 # Edge device artifacts
 modules/edge-device/enrolled_users/
 modules/edge-device/saved_user_images/
+modules/edge-device/archive/
+modules/edge-device/local_creds.txt
+modules/edge-device/data/
+modules/edge-device/logs/
 modules/edge-device/scripts/augment_enrollments.py
 modules/edge-device/scripts/calculate_face_size.py
 modules/edge-device/scripts/enroll_from_naming_schema.py

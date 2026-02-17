@@ -26,6 +26,9 @@ gradio>=4.0.0
 # Audio notifications (for guided enrollment)
 pygame>=2.5.0
 
+# IoT broker communication (Socket.IO client)
+python-socketio[client]>=5.10.0
+
 # Serialization
 # pickle, threading, time, os are built-in - no install needed
 

@@ -27,25 +27,28 @@
         "model": "ArcFace",
         "detector_backend": "yolov8n",
         "distance_threshold": 0.55,
-        "min_face_size": 30,
-        "process_fps": 1,
+        "min_face_size": 25,
+        "min_confidence": 0.5,
+        "process_fps": 5,
         "process_width": 640,
         "detection_width": 2560
     },
     "validation": {
         "confirmation_frames": 3,
         "consistency_threshold": 0.6,
-        "cooldown_seconds": 10
+        "cooldown_seconds": 3
     },
     "video_buffer": {
         "enabled": false,
-        "duration_seconds": 15,
+        "duration_seconds": 8,
         "buffer_path": "/tmp/video_buffer",
-        "pre_event_seconds": 10,
-        "post_event_seconds": 5
+        "pre_event_seconds": 5,
+        "post_event_seconds": 3
     },
     "sync": {
-        "enrollment_db_path": "data/enrollments.db"
+        "enrollment_db_path": "data/enrollments.db",
+        "socketio_url": "https://acetaxi-bridge.qryde.net",
+        "socketio_path": "/iot-broker/socket.io"
     },
     "heartbeat": {
         "interval_seconds": 30

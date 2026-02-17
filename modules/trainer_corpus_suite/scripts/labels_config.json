@@ -1,0 +1,32 @@
+{
+    "_comment": "Detection label configuration - modify for your domain",
+    "_note": "Labels are loaded at runtime - this file is domain-configurable",
+    
+    "nudenet": {
+        "enabled": true,
+        "model_size": 640,
+        "detection_labels": [],
+        "primary_indicator": "PRIMARY",
+        "secondary_indicator": "SECONDARY"
+    },
+    
+    "har": {
+        "enabled": true,
+        "annotation_files": {
+            "rgb": "annotations.txt",
+            "pose": "annotations_pose.txt", 
+            "audio": "annotations_audio.txt"
+        },
+        "modality_weights": [0.5, 0.6, 1.0],
+        "top_k": 5
+    },
+    
+    "demographics": {
+        "age_categories": {
+            "category_1": [0, 18],
+            "category_2": [18, 30],
+            "category_3": [30, 50],
+            "category_4": [50, 100]
+        }
+    }
+}

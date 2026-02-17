@@ -77,6 +77,7 @@ RUN echo "GPU re-enabled: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 # ============================================
 RUN pip install --no-cache-dir \
     "tensorflow[and-cuda]>=2.15.0" \
+    tf-keras>=2.18.0 \
     deepface>=0.0.79 \
     opencv-python-headless>=4.9.0 \
     ultralytics>=8.0.0

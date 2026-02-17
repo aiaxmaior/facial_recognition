@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from iot_integration.iot_client import IoTClient, IoTClientConfig
 from iot_integration.event_validator import EventValidator, EmotionEventValidator
 from iot_integration.sync_manager import SyncManager
+from iot_integration.ws_client import WebSocketClient, WebSocketConfig
 from iot_integration.db_manager import EnrollmentDBManager
 from iot_integration.schemas.event_schemas import FacialIdEvent
 from iot_integration.image_utils import encode_video_clip_b64
@@ -56,7 +57,7 @@ class FaceRecognitionPipeline:
     Face detection and recognition pipeline.
     
     Uses DeepFace with ArcFace model for recognition.
-    Optimized for Jetson with TensorRT acceleration when available.
+    # Original implementation does not use TensorRT. Need to wire in trt_face_detector module.
     """
     
     def __init__(self, config: Dict[str, Any]):
@@ -68,17 +69,23 @@ class FaceRecognitionPipeline:
         """
         self.config = config
         self.model_name = config.get("model", "ArcFace")
-        self.detector_backend = config.get("detector_backend", "yunet")
-        self.distance_threshold = config.get("distance_threshold", 0.35)
-        self.min_face_size = config.get("min_face_size", 40)
+        self.detector_backend = config.get("detector_backend", "yolov8n")
+        self.distance_threshold = config.get("distance_threshold", 0.55)
+        self.min_face_size = config.get("min_face_size", 25)
         self.min_confidence = config.get("min_confidence", 0.5)
         
         self._initialized = False
         self._embeddings_db: Dict[str, np.ndarray] = {}
         self._detection_count = 0  # For periodic logging
-        
-        logger.info(f"FaceRecognitionPipeline configured: model={self.model_name}, detector={self.detector_backend}, min_conf={self.min_confidence}")
-    
+        self._effective_FRP_config = {
+            "model": self.model_name,
+            "detector_backend": self.detector_backend,
+            "distance_threshold": self.distance_threshold,
+            "min_face_size": self.min_face_size,
+            "min_confidence": self.min_confidence
+        }
+        logger.info(f"FaceRecognitionPipeline configured: {self._effective_FRP_config}")
+
     def initialize(self) -> bool:
         """
         Initialize models (lazy loading).
@@ -331,41 +338,45 @@ class EdgeDevice:
         # Extract config sections
         self.device_id = self.config.get("device_id", "unknown-device")
         self.broker_url = self.config.get("broker_url")
+        self.camera_config = self.config.get("camera", {})
+        self.recognition_config = self.config.get("recognition", {})
+        self.validation_config = self.config.get("validation", {})
+        self.buffer_config = self.config.get("video_buffer", {})
+        self.sync_config = self.config.get("sync", {})
+        self.heartbeat_config = self.config.get("heartbeat", {})
         
-        camera_config = self.config.get("camera", {})
-        recognition_config = self.config.get("recognition", {})
-        validation_config = self.config.get("validation", {})
-        buffer_config = self.config.get("video_buffer", {})
-        
-        # Initialize components
+        # Camera
         self.camera: Optional[cv2.VideoCapture] = None
-        self.rtsp_url = camera_config.get("rtsp_url")
-        self.target_fps = camera_config.get("fps", 25)
+        self.rtsp_url = self.camera_config.get("rtsp_url")
+        self.target_fps = self.camera_config.get("fps", 25)
         
         # Face recognition pipeline
-        self.recognition = FaceRecognitionPipeline(recognition_config)
+        self.recognition = FaceRecognitionPipeline(self.recognition_config)
         
         # Event validator
+        self.confirmation_frames = self.validation_config.get("confirmation_frames", 3)
+        self.consistency_threshold = self.validation_config.get("consistency_threshold", 0.6)
+        self.cooldown_seconds = self.validation_config.get("cooldown_seconds", 3)
+        self.distance_threshold = self.recognition_config.get("distance_threshold", 0.55)
         self.validator = EventValidator(
             device_id=self.device_id,
-            confirmation_frames=validation_config.get("confirmation_frames", 5),
-            consistency_threshold=validation_config.get("consistency_threshold", 0.8),
-            cooldown_seconds=validation_config.get("cooldown_seconds", 30),
-            distance_threshold=recognition_config.get("distance_threshold", 0.35),
+            confirmation_frames=self.confirmation_frames,
+            consistency_threshold=self.consistency_threshold,
+            cooldown_seconds=self.cooldown_seconds,
+            distance_threshold=self.distance_threshold,
             on_event_validated=self._on_event_validated
         )
         
         # Video buffer
         self.video_buffer: Optional[VideoRingBuffer] = None
-        if buffer_config.get("enabled", True):
+        if self.buffer_config.get("enabled", False):
             self.video_buffer = VideoRingBuffer(
-                buffer_seconds=buffer_config.get("duration_seconds", 15),
+                buffer_seconds=self.buffer_config.get("duration_seconds", 8),
                 fps=self.target_fps,
-                buffer_path=buffer_config.get("buffer_path", "/tmp/video_buffer"),
-                pre_event_seconds=buffer_config.get("pre_event_seconds", 10),
-                post_event_seconds=buffer_config.get("post_event_seconds", 5)
+                buffer_path=self.buffer_config.get("buffer_path", "/tmp/video_buffer"),
+                pre_event_seconds=self.buffer_config.get("pre_event_seconds", 5),
+                post_event_seconds=self.buffer_config.get("post_event_seconds", 3)
             )
-            # Register callback for when clips are ready
             self.video_buffer.on_clip_ready = self._on_clip_ready
         
         # IoT client
@@ -377,34 +388,46 @@ class EdgeDevice:
         )
         self.iot_client = IoTClient(iot_config)
         
-        # Enrollment database
-        sync_config = self.config.get("sync", {})
-        db_path = sync_config.get("enrollment_db_path", "/opt/qraie/data/enrollments/enrollments.db")
+        # Enrollment database and sync manager (push-based via WebSocket)
+        db_path = self.sync_config.get("enrollment_db_path", "data/enrollments.db")
         self.enrollment_db = EnrollmentDBManager(db_path)
+        self.sync_manager = SyncManager(
+            db_manager=self.enrollment_db,
+            model=self.recognition_config.get("model", "ArcFace"),
+            on_sync_complete=self._on_sync_complete,
+        )
+        
+        # Socket.IO client for real-time enrollment push from broker
+        sio_url = self.sync_config.get("socketio_url", "")
+        sio_path = self.sync_config.get("socketio_path", "/iot-broker/socket.io")
+        sio_config = WebSocketConfig(
+            device_id=self.device_id,
+            socketio_url=sio_url,
+            socketio_path=sio_path,
+            api_key=self.config.get("api_key"),
+        )
+        self.ws_client = WebSocketClient(sio_config)
+        self.ws_client.on_enrollment_update = self.sync_manager.handle_enrollment_update
         
         # State
         self._running = False
         self._frame_id = 0
         self._last_heartbeat = 0
-        self._heartbeat_interval = self.config.get("heartbeat", {}).get("interval_seconds", 30)
+        self._heartbeat_interval = self.heartbeat_config.get("interval_seconds", 30)
         
         # Debug display
         self._display = display
-        self._last_detections = []  # Store detections for drawing
+        self._last_detections = []
         
-        # Store frame/bbox/debug for event image capture
+        # Pending event data for image capture
         self._pending_event_frame = None
         self._pending_event_bbox = None
         self._pending_event_debug = []
         
         # Processing settings
-        self._process_fps = recognition_config.get("process_fps", 1)  # Process 1 frame per second
-        # Detection resolution: high resolution (2560px default) for better distant face detection
-        # Recognition still uses full-resolution crops from original frame
-        # At 15ft with 90° FOV: face is ~42px in 2560px frame (meets 30px min_face_size threshold)
-        # If camera is already 2560px, detection runs at full resolution (no downscaling)
-        self._detection_width = recognition_config.get("detection_width", 2560)  # Detection resolution
-        self._process_width = recognition_config.get("process_width", 640)  # Legacy: kept for backward compat
+        self._process_fps = self.recognition_config.get("process_fps", 5)
+        self._detection_width = self.recognition_config.get("detection_width", 2560)
+        self._process_width = self.recognition_config.get("process_width", 640)
         self._last_process_time = 0
         
         # Statistics
@@ -416,7 +439,29 @@ class EdgeDevice:
             "start_time": None
         }
         
-        logger.info(f"EdgeDevice initialized: device_id={self.device_id}")
+        # Definitive config dump — exactly what the system is running with
+        self._effective_config = {
+            "device_id": self.device_id,
+            "broker_url": self.broker_url,
+            "rtsp_url": self.rtsp_url,
+            "target_fps": self.target_fps,
+            "model": self.recognition.model_name,
+            "detector_backend": self.recognition.detector_backend,
+            "distance_threshold": self.distance_threshold,
+            "min_face_size": self.recognition.min_face_size,
+            "min_confidence": self.recognition.min_confidence,
+            "process_fps": self._process_fps,
+            "detection_width": self._detection_width,
+            "confirmation_frames": self.confirmation_frames,
+            "consistency_threshold": self.consistency_threshold,
+            "cooldown_seconds": self.cooldown_seconds,
+            "enrollment_db_path": db_path,
+            "socketio_url": sio_url,
+            "socketio_path": sio_path,
+            "heartbeat_interval": self._heartbeat_interval,
+            "video_buffer_enabled": self.video_buffer is not None,
+        }
+        logger.info(f"[CONFIG] Effective configuration: {self._effective_config}")
     
     def _load_config(self, path: str) -> Dict:
         """Load configuration from JSON file."""
@@ -428,6 +473,17 @@ class EdgeDevice:
         except Exception as e:
             logger.error(f"Failed to load config from {path}: {e}")
             return {}
+    
+    def _on_sync_complete(self, additions: int, removals: int, new_version: int) -> None:
+        """Callback when enrollment database is synced - reloads embeddings into the pipeline"""
+        logger.info(f"Sync Complete: add: {additions} , remove: {removals}, new version {new_version}")
+        if additions > 0 or removals > 0:
+            try: 
+                self._load_enrollments()
+                logger.info(f"Enrollments reloaded after sync, {datetime.now().isoformat()}")
+            except Exception as e:
+                logger.error(f"Failure to reload enrollments after sync: {e}"
+                )
     
     def _on_event_validated(self, event: FacialIdEvent) -> None:
         """Callback when an event is validated."""
@@ -786,15 +842,21 @@ class EdgeDevice:
             return
         
         # Load enrollments
+        self.enrollment_db.initialize()
+
         self._load_enrollments()
+
         
         # Connect camera
         if not self._connect_camera():
             logger.error("Failed to connect to camera")
             return
         
-        # Start IoT client
+        # Start IoT client (for outbound events/heartbeats)
         self.iot_client.start()
+
+        # Start WebSocket client (for inbound enrollment pushes)
+        self.ws_client.start()
         
         # Start video buffer
         if self.video_buffer:
@@ -1000,6 +1062,7 @@ class EdgeDevice:
             self.video_buffer.stop()
         
         self.iot_client.stop()
+        self.ws_client.stop()
         
         if self.camera:
             self.camera.release()
