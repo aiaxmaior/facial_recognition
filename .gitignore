@@ -150,6 +150,9 @@ modules/edge-device/scripts/enroll_from_naming_schema.py
 # Dev / experimental modules
 modules/edge-device_dev/
 
+# Independent project - not part of company deliverable
+modules/trainer_corpus_suite/
+
 # Utility scripts & snapshots
 remote_file_reader.py
 ssh_helper.py
