@@ -21,7 +21,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .schemas.event_schemas import EventPayload, FacialIdEvent, EmotionEvent
-from .schemas.sync_schemas import SyncRequest, SyncResponse
 from .image_utils import compress_image_for_event
 from .logging_config import EventLogger
 
@@ -34,6 +33,12 @@ class IoTClientConfig:
     device_id: str
     broker_url: str
     api_key: Optional[str] = None
+    
+    # Endpoint paths (appended to broker_url)
+    events_path: str = "/events"
+    heartbeat_path: str = "/heartbeat"
+    registration_path: str = "/registration"
+    media_path: str = "/media"
     
     # Retry settings
     max_retries: int = 3
@@ -99,7 +104,6 @@ class IoTClient:
         # Callbacks
         self.on_event_sent: Optional[Callable[[str], None]] = None
         self.on_event_failed: Optional[Callable[[str, str], None]] = None
-        self.on_sync_complete: Optional[Callable[[SyncResponse], None]] = None
         
         # Statistics
         self.stats = {
@@ -108,8 +112,6 @@ class IoTClient:
             "events_failed": 0,
             "video_clips_sent": 0,
             "video_clips_failed": 0,
-            "sync_requests": 0,
-            "sync_failures": 0,
             "bytes_sent": 0,
         }
     
@@ -261,7 +263,7 @@ class IoTClient:
         if not events:
             return
         
-        url = f"{self.config.broker_url}/data/events"
+        url = f"{self.config.broker_url}{self.config.events_path}"
         
         # Build payload with Socket.IO message format
         # Each event is [header, data] structure
@@ -351,7 +353,7 @@ class IoTClient:
             )
             has_image = event.image is not None
         
-        url = f"{self.config.broker_url}/data/events"
+        url = f"{self.config.broker_url}{self.config.events_path}"
         
         # Get event ID for logging
         client_event_id = getattr(event, 'event_id', None) or 'unknown'
@@ -471,78 +473,6 @@ class IoTClient:
             return False
     
     # =========================================================================
-    # Sync Operations
-    # =========================================================================
-    
-    def request_sync(
-        self,
-        since_version: int = 0,
-        force_full: bool = False,
-        current_count: int = None,
-        model: str = "ArcFace",
-    ) -> Optional[SyncResponse]:
-        """
-        Request enrollment sync from broker.
-        
-        Args:
-            since_version: Only get updates after this version
-            force_full: Force full database sync
-            current_count: Current local enrollment count
-            model: Expected embedding model
-            
-        Returns:
-            SyncResponse with updates, or None on failure
-        """
-        url = f"{self.config.broker_url}/data/enrollments/sync"
-        
-        request = SyncRequest(
-            device_id=self.config.device_id,
-            since_version=since_version,
-            current_count=current_count,
-            model=model,
-            force_full_sync=force_full,
-        )
-        
-        try:
-            self.stats["sync_requests"] += 1
-            
-            response = self._session.get(
-                url,
-                params={
-                    "device_id": request.device_id,
-                    "since_version": request.since_version,
-                    "force_full": "true" if request.force_full_sync else "false",
-                    "model": request.model,
-                },
-                timeout=self.config.timeout_seconds,
-                verify=self.config.verify_ssl,
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            sync_response = SyncResponse(**data)
-            
-            logger.info(
-                f"Sync response: version={sync_response.sync_version}, "
-                f"additions={len(sync_response.additions)}, "
-                f"removals={len(sync_response.removals)}"
-            )
-            
-            if self.on_sync_complete:
-                self.on_sync_complete(sync_response)
-            
-            return sync_response
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Sync request failed: {e}")
-            self.stats["sync_failures"] += 1
-            return None
-        except Exception as e:
-            logger.error(f"Failed to parse sync response: {e}")
-            self.stats["sync_failures"] += 1
-            return None
-    
-    # =========================================================================
     # Video Clip Upload
     # =========================================================================
     
@@ -570,7 +500,7 @@ class IoTClient:
         Returns:
             True if sent successfully
         """
-        url = f"{self.config.broker_url}/data/events/video"
+        url = f"{self.config.broker_url}{self.config.media_path}"
         timestamp = datetime.utcnow().isoformat() + "Z"
         
         # Build Socket.IO message format
@@ -639,7 +569,7 @@ class IoTClient:
         Returns:
             True if registered successfully
         """
-        url = f"{self.config.broker_url}/data/devices"
+        url = f"{self.config.broker_url}{self.config.registration_path}"
         
         payload = {
             "device_id": self.config.device_id,
@@ -684,7 +614,7 @@ class IoTClient:
         Returns:
             True if successful
         """
-        url = f"{self.config.broker_url}/data/devices/{self.config.device_id}/heartbeat"
+        url = f"{self.config.broker_url}{self.config.heartbeat_path}"
         
         payload = {
             "timestamp": datetime.utcnow().isoformat() + "Z",

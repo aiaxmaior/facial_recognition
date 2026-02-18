@@ -458,9 +458,14 @@ class EdgeDevice:
             self.video_buffer.on_clip_ready = self._on_clip_ready
         
         # IoT client
+        endpoints = self.config.get("endpoints", {})
         iot_config = IoTClientConfig(
             device_id=self.device_id,
             broker_url=self.broker_url,
+            events_path=endpoints.get("events", "/events"),
+            heartbeat_path=endpoints.get("heartbeat", "/heartbeat"),
+            registration_path=endpoints.get("registration", "/registration"),
+            media_path=endpoints.get("media", "/media"),
             batch_size=10,
             batch_timeout_ms=5000
         )
@@ -566,7 +571,10 @@ class EdgeDevice:
     
     def _on_event_validated(self, event: FacialIdEvent) -> None:
         """Callback when an event is validated."""
-        logger.info(f"Event validated: user={event.user_id}, confidence={event.confidence:.2f}")
+        logger.info(
+            f"Event validated: user={event.user_id}, confidence={event.confidence:.2f}, "
+            f"event_id={event.event_id}, event_ts={event.timestamp.isoformat()}Z"
+        )
         
         # Attach debug entries to event for Graylog
         if self._pending_event_debug:
@@ -584,16 +592,15 @@ class EdgeDevice:
                 face_bbox=bbox
             )
             if success:
-                logger.info(f"Event sent with face image")
+                logger.info(f"Event sent: {event.event_id} (with image)")
             else:
-                logger.error(f"Event transmission failed")
+                logger.error(f"Event transmission failed: {event.event_id}")
         else:
-            # Fallback: send without image
             success = self.iot_client.send_event_sync(event)
             if success:
-                logger.warning(f"Event sent without image (no frame available)")
+                logger.warning(f"Event sent: {event.event_id} (no image)")
             else:
-                logger.error(f"Event transmission failed (no image)")
+                logger.error(f"Event transmission failed: {event.event_id}")
         
         self.stats["events_validated"] += 1
         

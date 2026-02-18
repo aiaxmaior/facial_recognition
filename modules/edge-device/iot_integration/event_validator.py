@@ -179,6 +179,7 @@ class EventValidator:
             
             # Check if we have enough frames
             if len(track.recognitions) < self.confirmation_frames:
+                logger.info(f"[VALIDATOR] {track_id}: {user_id} frame {len(track.recognitions)}/{self.confirmation_frames} (dist={distance:.3f})")
                 return None
             
             # Already emitted for this track?

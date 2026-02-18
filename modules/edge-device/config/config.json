@@ -1,7 +1,13 @@
 {
     "device_id": "jetson-001",
-    "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker/api",
+    "broker_url": "https://acetaxi-bridge.qryde.net/iot-broker",
     "api_key": null,
+    "endpoints": {
+        "events": "/events",
+        "heartbeat": "/heartbeat",
+        "registration": "/registration",
+        "media": "/media"
+    },
     "camera": {
         "rtsp_url": "rtsp://admin:Fanatec2025@192.168.50.141/Preview_01_main",
         "fps": 25

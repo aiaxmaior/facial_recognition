@@ -30,7 +30,7 @@ def generate_event_id(event_type: str, device_id: str = "device") -> str:
         - Emotion monitoring: EV2-{timestamp}-{device_id_suffix}
     """
     timestamp = int(datetime.utcnow().timestamp() * 1000)
-    device_suffix = device_id.replace("-", "")[-8:] if device_id else uuid.uuid4().hex[:8]
+    device_suffix = device_id if device_id else uuid.uuid4().hex[:8]
     
     if event_type == "face_recognition":
         return f"EV1-{timestamp}-{device_suffix}"
@@ -161,6 +161,7 @@ class FaceRecognitionEvent(BaseModel):
     
     # For compatibility with existing code
     user_id: Optional[str] = Field(None, description="Alias for person_id")
+    image: Optional[str] = Field(None, description="Base64 JPEG face crop (set by IoT client)")
     
     def __init__(self, **data):
         # Handle user_id -> person_id compatibility
@@ -171,6 +172,10 @@ class FaceRecognitionEvent(BaseModel):
         # Default person_name to person_id if not provided
         if "person_name" not in data and "person_id" in data:
             data["person_name"] = data["person_id"]
+        # Generate event_id if not provided
+        if not data.get("event_id"):
+            device_id = data.get("device_id", "device")
+            data["event_id"] = generate_event_id("face_recognition", device_id)
         super().__init__(**data)
     
     def to_broker_message(self) -> list:

@@ -1,14 +1,12 @@
 """
 IoT Integration Module for Facial Recognition System
 
-This module provides integration with IoT brokers and central WFM dashboards
-for facial recognition and emotion monitoring edge devices.
-
 Components:
-    - schemas: Pydantic models for events, sync, and database schemas
+    - schemas: Pydantic models for events, WebSocket messages, and database
     - event_validator: Temporal tracking and event validation
-    - iot_client: Device-side IoT broker communication
-    - sync_manager: SQLite ↔ MongoDB enrollment sync
+    - iot_client: HTTP outbound (events, heartbeats, video clips)
+    - ws_client: Socket.IO inbound (enrollment push from broker)
+    - sync_manager: Enrollment push handler (broker -> SQLite -> pipeline)
     - db_manager: Local SQLite database management
     - image_utils: Image compression for event payloads
 """
@@ -17,37 +15,36 @@ from .schemas import (
     EventPayload,
     FacialIdEvent,
     EmotionEvent,
-    SyncRequest,
-    SyncResponse,
+    BrokerMessageHeader,
+    EnrollmentPublishData,
     EnrollmentRecord,
     DeviceConfig,
 )
 from .event_validator import EventValidator
 from .iot_client import IoTClient, IoTClientConfig
+from .ws_client import WebSocketClient, WebSocketConfig
 from .sync_manager import SyncManager
 from .db_manager import DatabaseManager, EnrollmentDBManager
 from .image_utils import compress_image_for_event
-from .adapter import IoTAdapter, LiveStreamWithIoT
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__ = [
     # Schemas
     "EventPayload",
-    "FacialIdEvent", 
+    "FacialIdEvent",
     "EmotionEvent",
-    "SyncRequest",
-    "SyncResponse",
+    "BrokerMessageHeader",
+    "EnrollmentPublishData",
     "EnrollmentRecord",
     "DeviceConfig",
     # Core components
     "EventValidator",
     "IoTClient",
     "IoTClientConfig",
+    "WebSocketClient",
+    "WebSocketConfig",
     "SyncManager",
     "DatabaseManager",
     "EnrollmentDBManager",
     "compress_image_for_event",
-    # Adapter for existing system
-    "IoTAdapter",
-    "LiveStreamWithIoT",
 ]
